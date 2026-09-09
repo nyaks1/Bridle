@@ -60,6 +60,29 @@ In progress — building for ETHGlobal Online, submission deadline Sun Sept 13, 
 
 ---
 
+## Project Structure
+
+```
+Bridle/
+├── .env                       # Hedera RPC, operator private key, paywall address
+├── .env.example               # Template environment configuration
+├── hardhat.config.ts          # Hardhat 3 configuration (EVM Shanghai, Hedera Testnet)
+├── package.json               # Node.js dependencies and scripts
+│
+├── contracts/                 # [Smart Contract Layer]
+│   └── BridlePaywall.sol      # Solidity 0.8.20 paywall logic
+├── scripts/
+│   └── deploy.ts              # Hardhat 3 Hedera Testnet deployment runner
+│
+└── app/                       # [Combined Server & Agent Layer]
+    ├── venv/                  # Python virtual environment
+    ├── requirements.txt       # Dependencies (fastapi, uvicorn, web3, requests, etc.)
+    ├── server.py              # FastAPI x402 gateway & Hedera transaction verification
+    └── agent.py               # Agent client (402 handler, spending threshold, settlement)
+```
+
+---
+
 ## Project Setup & Running
 
 ### Prerequisites
@@ -87,7 +110,7 @@ PAYWALL_CONTRACT_ADDRESS="0x5442A862d2B11709045BE15015368c7dD6B9cfd8"
 
 ### 2. Smart Contract: Compile & Deploy (Hardhat 3)
 
-Install dependencies:
+Install root dependencies:
 
 ```bash
 npm install
@@ -99,48 +122,48 @@ Compile the Solidity 0.8.20 contracts:
 npx hardhat compile
 ```
 
-Deploy `BridlePaywall` to Hedera Testnet:
+Deploy the `BridlePaywall` contract to Hedera Testnet:
 
 ```bash
 npx hardhat run scripts/deploy.ts --network hedera_testnet
 ```
 
-### 3. Start the x402 Payment Gateway (FastAPI)
+### 3. Application Setup (`app/`)
 
-Set up the Python environment:
+Set up the shared Python environment:
 
 ```bash
 cd server
 python3 -m venv venv
 source venv/bin/activate
-pip install fastapi uvicorn web3 python-dotenv pydantic requests
+pip install -r requirements.txt
 ```
 
-Start the gateway server:
+### 4. Running the End-to-End System
+
+**Terminal 1: Start the x402 Server**
 
 ```bash
+cd server
+source venv/bin/activate
 uvicorn main:app --reload --port 8000
 ```
 
-### 4. Verify Endpoints
-
-Health Check:
+**Terminal 2: Run the Agent Flow**
 
 ```bash
-curl http://127.0.0.1:8000/api/health
+cd server
+source venv/bin/activate
+python3 agent_test.py
 ```
 
-Trigger an HTTP 402 Challenge:
+**Verification Steps:**
 
-```bash
-curl -i http://127.0.0.1:8000/api/protected-resource
-```
-
-Access with Valid On-Chain Settlement:
-
-```bash
-curl http://127.0.0.1:8000/api/protected-resource -H "X-Payment-Tx: 0xYOUR_CONFIRMED_HEDERA_TX_HASH"
-```
+1. Agent attempts access to `http://127.0.0.1:8000/api/protected-resource`.
+2. Server responds with `402 Payment Required` challenge.
+3. Agent checks spending policy against threshold (≤ 5.0 HBAR auto-settles; > 5.0 HBAR prompts Ledger).
+4. Agent submits on-chain payment to `BridlePaywall` on Hedera Testnet.
+5. Agent presents confirmed transaction hash in `X-Payment-Tx` header to unlock the resource.
 
 ---
 
