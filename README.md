@@ -1,24 +1,24 @@
 # Bridle
 
-**A hardware-confirmed trust layer for AI agent payments.**
+A hardware-confirmed trust layer for AI agent payments.
 
-Agents pay for what they use — autonomously, over [x402](https://github.com/x402-foundation/x402) on [Hedera](https://hedera.com/) — but nothing above a spending threshold moves without a human holding the reins. A [Ledger](https://www.ledger.com/) hardware device confirms or rejects every high-value payment before it settles.
+Agents pay for what they use — autonomously, over x402 on Hedera — but nothing above a spending threshold moves without a human holding the reins. A Ledger hardware device confirms or rejects every high-value payment before it settles.
 
-Built for [ETHGlobal Online](https://ethglobal.com/) 2026.
+Built for ETHGlobal Online 2026.
 
 ---
 
 ## The problem
 
-AI agents are starting to hold wallets and spend money on their own — calling paid APIs, buying data, paying for compute. Today that mostly means an API key sitting in a `.env` file, and an agent with no real limit on what it can spend. This maps directly to **OWASP LLM Top 10 — LLM08: Excessive Agency**: systems that let an AI act on money or resources with no meaningful human checkpoint.
+AI agents are starting to hold wallets and spend money on their own — calling paid APIs, buying data, paying for compute. Today that mostly means an API key sitting in a `.env` file, and an agent with no real limit on what it can spend. This maps directly to OWASP LLM Top 10 — **LLM08: Excessive Agency**: systems that let an AI act on money or resources with no meaningful human checkpoint.
 
 ## The solution
 
 Bridle sits between an agent and its money.
 
-1. The agent discovers a metered service and attempts to pay for it via **x402** (HTTP 402 Payment Required), settled on **Hedera** — sub-cent fees, no subscriptions, no leaked API keys.
+1. The agent discovers a metered service and attempts to pay for it via x402 (HTTP 402 Payment Required), settled on Hedera — sub-cent fees, no subscriptions, no leaked API keys.
 2. Payments under a set threshold settle automatically.
-3. Payments **over** the threshold pause the agent and send a confirmation request to a **Ledger** hardware device. A human taps to confirm or reject — physically, on hardware, before any funds move.
+3. Payments over the threshold pause the agent and send a confirmation request to a Ledger hardware device. A human taps to confirm or reject — physically, on hardware, before any funds move.
 4. Every settlement (confirmed or rejected) is logged and auditable.
 
 The agent keeps its autonomy for everyday spend. The human keeps the veto for everything that matters.
@@ -46,8 +46,8 @@ x402 gate (HTTP 402 Payment Required)
 
 ## Tracks
 
-- **Hedera — AI & Agentic Payments**
-- **Ledger — AI Agents x Ledger**
+- Hedera — AI & Agentic Payments
+- Ledger — AI Agents x Ledger
 
 ## Team
 
@@ -56,12 +56,94 @@ x402 gate (HTTP 402 Payment Required)
 
 ## Status
 
-🚧 In progress — building for ETHGlobal Online, submission deadline Sun Sept 13, 2026, 12:00pm EDT.
+In progress — building for ETHGlobal Online, submission deadline Sun Sept 13, 2026, 12:00pm EDT.
 
-## Setup
+---
 
-_(to be filled in as the build progresses)_
+## Project Setup & Running
+
+### Prerequisites
+
+- Node.js: v20+ (supports ESM and native module resolution)
+- Python: 3.10+
+- Hedera Testnet Account & ECDSA Private Key (from Hedera Portal)
+
+### 1. Environment Configuration
+
+Create a root `.env` file:
+
+```bash
+cp .env.example .env
+```
+
+Set the required environment variables:
+
+```env
+HEDERA_RPC_URL="https://testnet.hashio.io/api"
+CHAIN_ID=296
+OPERATOR_PRIVATE_KEY="0xYOUR_HEDERA_TESTNET_OPERATOR_PRIVATE_KEY"
+PAYWALL_CONTRACT_ADDRESS="0x5442A862d2B11709045BE15015368c7dD6B9cfd8"
+```
+
+### 2. Smart Contract: Compile & Deploy (Hardhat 3)
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Compile the Solidity 0.8.20 contracts:
+
+```bash
+npx hardhat compile
+```
+
+Deploy `BridlePaywall` to Hedera Testnet:
+
+```bash
+npx hardhat run scripts/deploy.ts --network hedera_testnet
+```
+
+### 3. Start the x402 Payment Gateway (FastAPI)
+
+Set up the Python environment:
+
+```bash
+cd server
+python3 -m venv venv
+source venv/bin/activate
+pip install fastapi uvicorn web3 python-dotenv pydantic requests
+```
+
+Start the gateway server:
+
+```bash
+uvicorn main:app --reload --port 8000
+```
+
+### 4. Verify Endpoints
+
+Health Check:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+Trigger an HTTP 402 Challenge:
+
+```bash
+curl -i http://127.0.0.1:8000/api/protected-resource
+```
+
+Access with Valid On-Chain Settlement:
+
+```bash
+curl http://127.0.0.1:8000/api/protected-resource -H "X-Payment-Tx: 0xYOUR_CONFIRMED_HEDERA_TX_HASH"
+```
+
+---
 
 ## License
 
-_(to be decided)_
+Apache-2.0
