@@ -74,11 +74,11 @@ Bridle/
 ├── scripts/
 │   └── deploy.ts              # Hardhat 3 Hedera Testnet deployment runner
 │
-└── app/                       # [Combined Server & Agent Layer]
+└── server/                       # [Combined Server & Agent Layer]
     ├── venv/                  # Python virtual environment
     ├── requirements.txt       # Dependencies (fastapi, uvicorn, web3, requests, etc.)
-    ├── server.py              # FastAPI x402 gateway & Hedera transaction verification
-    └── agent.py               # Agent client (402 handler, spending threshold, settlement)
+    ├── main.py              # FastAPI x402 gateway & Hedera transaction verification
+    └── agent_test.py               # Agent client (402 handler, spending threshold, settlement)
 ```
 
 ---
