@@ -89,7 +89,7 @@ Bridle/
 └── server/
     ├── requirements.txt       # Python dependencies
     ├── main.py                # FastAPI x402 gateway & Hedera transaction verification
-    └── agent_test.py          # Agent client (402 handler, policy gate, settlement)
+    └── agent.py               # Gemini-powered agent (service classification, policy gate, HCS)
 ```
 
 ## Setup
@@ -114,6 +114,7 @@ HEDERA_RPC_URL="https://testnet.hashio.io/api"
 OPERATOR_PRIVATE_KEY="0xYOUR_HEX_KEY_HERE"
 HEDERA_ACCOUNT_ID="0.0.YOUR_ACCOUNT_ID"
 PAYWALL_CONTRACT_ADDRESS="0x5442A862d2B11709045BE15015368c7dD6B9cfd8"
+GEMINI_API_KEY="your_gemini_api_key_here"
 HCS_TOPIC_ID="0.0.YOUR_TOPIC_ID"
 ```
 
@@ -140,7 +141,7 @@ uvicorn main:app --reload --port 8000
 ```bash
 cd server
 source venv/bin/activate
-python3 agent_test.py
+python3 agent.py
 ```
 
 ## Verification
