@@ -7,6 +7,14 @@ from dotenv import load_dotenv
 import requests
 import google.generativeai as genai
 from web3 import Web3
+from hiero_sdk_python import (
+    Client,
+    TopicCreateTransaction,
+    TopicMessageSubmitTransaction,
+    AccountId,
+    PrivateKey,
+    TopicId,
+)
 
 # Load environment
 env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -15,6 +23,7 @@ load_dotenv(dotenv_path=env_path)
 # Configuration
 RPC_URL = os.getenv("HEDERA_RPC_URL", "https://testnet.hashio.io/api")
 PRIVATE_KEY = os.getenv("OPERATOR_PRIVATE_KEY")
+HEDERA_ACCOUNT_ID = os.getenv("HEDERA_ACCOUNT_ID")
 GATEWAY_URL = "http://127.0.0.1:8000/api/protected-resource"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SPENDING_THRESHOLD_HBAR = float(os.getenv("SPENDING_THRESHOLD_HBAR", "5.0"))
@@ -35,9 +44,23 @@ account = w3.eth.account.from_key(clean_key)
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-3.6-flash")
 
+# Hedera client for HCS
+hedera_client = Client.for_testnet()
+hedera_account_id = AccountId.from_string(HEDERA_ACCOUNT_ID)
+hedera_private_key = PrivateKey.from_string_ecdsa(PRIVATE_KEY)
+hedera_client.set_operator(hedera_account_id, hedera_private_key)
+
+def create_hcs_topic() -> str:
+    """Create a new HCS topic for audit logging. Returns topic ID."""
+    transaction = TopicCreateTransaction(memo="Bridle Audit Trail")
+    receipt = transaction.freeze_with(hedera_client).execute(hedera_client)
+    topic_id = receipt.topic_id
+    print(f"[HCS] Created topic: {topic_id}")
+    return str(topic_id)
+
 def log_to_hcs(event: dict) -> str:
     """Log an event to Hedera Consensus Service.
-    Returns the message ID or empty string if no topic configured."""
+    Returns the transaction ID or empty string if no topic configured."""
     if not HCS_TOPIC_ID:
         print("[HCS] No topic ID configured, skipping log")
         return ""
@@ -45,10 +68,21 @@ def log_to_hcs(event: dict) -> str:
     event["timestamp"] = datetime.now(timezone.utc).isoformat()
     message = json.dumps(event)
 
-    print(f"[HCS] Logging: {event.get('event', 'unknown')} - {message}")
-
-    # TODO: Submit to HCS via Hedera SDK or REST API
-    return f"hcs-message-{int(time.time())}"
+    try:
+        topic_id = TopicId.from_string(HCS_TOPIC_ID)
+        transaction = (
+            TopicMessageSubmitTransaction()
+            .set_topic_id(topic_id)
+            .set_message(message)
+            .freeze_with(hedera_client)
+            .execute(hedera_client)
+        )
+        tx_id = str(transaction.transaction_id)
+        print(f"[HCS] Logged: {event.get('event', 'unknown')} - txId={tx_id}")
+        return tx_id
+    except Exception as e:
+        print(f"[HCS] Error logging: {e}")
+        return ""
 
 def is_payment_allowed(amount: float, threshold: float) -> bool:
     """Deterministic policy check — never delegate this to LLM."""
