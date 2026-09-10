@@ -24,14 +24,19 @@ Nobody, not even the operator, can quietly edit or delete the audit trail after 
 ## Architecture
 
 ```
-Agent (Python)
+Agent (Python + Gemini)
    │
-   ├─ discovers service → attempts call
+   ├─ requests service → gets 402 challenge
    │
    ▼
-x402 gate (HTTP 402 Payment Required)
+Gemini classifies service relevance
    │
-   ├─ under threshold ──► auto-settle on Hedera ──► log to HCS ──► response returned
+   ├─ not relevant ──► skip
+   │
+   ▼
+Policy gate (deterministic, not LLM)
+   │
+   ├─ under threshold ──► auto-settle on Hedera ──► log to HCS ──► unlock resource
    │
    └─ over threshold ──► blocked by policy ──► log rejection to HCS
 ```
