@@ -42,6 +42,12 @@ def get_protected_resource(
             "chain_id": 296,
             "paywall_contract": PAYWALL_ADDRESS,
             "amount_hbar": REQUIRED_AMOUNT_HBAR,
+            "service": {
+                "name": "Bridle Weather API",
+                "description": "Real-time weather data for any location. Returns temperature, humidity, wind speed, and 5-day forecast. Rate-limited to 100 requests per hour after payment.",
+                "endpoint": "/api/weather",
+                "data_returned": "JSON with current conditions and forecast"
+            },
             "instructions": "Submit a transfer to the contract and supply tx hash in 'X-Payment-Tx' header."
         }
 

@@ -19,6 +19,7 @@ GATEWAY_URL = "http://127.0.0.1:8000/api/protected-resource"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SPENDING_THRESHOLD_HBAR = float(os.getenv("SPENDING_THRESHOLD_HBAR", "5.0"))
 HCS_TOPIC_ID = os.getenv("HCS_TOPIC_ID", "")
+AGENT_TASK = os.getenv("AGENT_TASK", "Get current weather data for Cape Town, South Africa")
 
 # Validate
 if not PRIVATE_KEY:
@@ -32,7 +33,7 @@ clean_key = PRIVATE_KEY if PRIVATE_KEY.startswith("0x") else f"0x{PRIVATE_KEY}"
 account = w3.eth.account.from_key(clean_key)
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.0-flash")
+model = genai.GenerativeModel("gemini-3.6-flash")
 
 def log_to_hcs(event: dict) -> str:
     """Log an event to Hedera Consensus Service.
@@ -53,13 +54,36 @@ def is_payment_allowed(amount: float, threshold: float) -> bool:
     """Deterministic policy check — never delegate this to LLM."""
     return amount <= threshold
 
-def classify_service(service_desc: str, task: str) -> str:
-    """Use Gemini to classify whether a service matches a task."""
+def classify_service(service: dict, task: str) -> dict:
+    """Use Gemini to analyze if a service is relevant to our task."""
+    service_desc = json.dumps(service, indent=2)
+
+    prompt = f"""Analyze this service and determine if it's relevant to our task.
+
+Service:
+{service_desc}
+
+Our task: {task}
+
+Respond with JSON:
+{{
+  "relevant": true/false,
+  "reason": "one-line explanation",
+  "value_assessment": "low/medium/high"
+}}"""
+
     response = model.generate_content(
-        f"Given this service description: {service_desc}, "
-        f"does it match the task: {task}? Answer yes or no with a one-line reason."
+        prompt,
+        generation_config=genai.GenerationConfig(
+            temperature=0.1,
+            response_mime_type="application/json"
+        )
     )
-    return response.text
+
+    try:
+        return json.loads(response.text)
+    except json.JSONDecodeError:
+        return {"relevant": True, "reason": "unable to parse, defaulting to relevant", "value_assessment": "medium"}
 
 def run_agent():
     """Main agent loop."""
@@ -70,6 +94,7 @@ def run_agent():
     balance_wei = w3.eth.get_balance(account.address)
     print(f"Balance: {w3.from_wei(balance_wei, 'ether')} HBAR")
     print(f"Threshold: {SPENDING_THRESHOLD_HBAR} HBAR")
+    print(f"Task: {AGENT_TASK}")
     print("=" * 60)
 
     # Step 1: Request gated resource
@@ -88,8 +113,18 @@ def run_agent():
 
     amount = float(challenge.get("amount_hbar", 0))
     paywall = challenge.get("paywall_contract")
+    service = challenge.get("service", {})
 
-    # Step 3: Policy gate — deterministic, not LLM
+    # Step 3: Gemini analyzes the service
+    print("\n--> Gemini analyzing service relevance...")
+    analysis = classify_service(service, AGENT_TASK)
+    print(f"Gemini analysis: {json.dumps(analysis, indent=2)}")
+
+    if not analysis.get("relevant", True):
+        print(f"\n[SKIP] Service not relevant to task: {analysis.get('reason')}")
+        return
+
+    # Step 4: Policy gate — deterministic, not LLM
     if not is_payment_allowed(amount, SPENDING_THRESHOLD_HBAR):
         event = {
             "event": "payment_blocked",
@@ -97,13 +132,14 @@ def run_agent():
             "amount_hbar": amount,
             "threshold": SPENDING_THRESHOLD_HBAR,
             "reason": "exceeds_policy_threshold",
-            "paywall": paywall,
+            "service": service.get("name", "unknown"),
+            "gemini_reasoning": analysis.get("reason", ""),
         }
         log_to_hcs(event)
         print(f"\n[BLOCKED] Payment of {amount} HBAR rejected by policy.")
         return
 
-    # Step 4: Auto-settle
+    # Step 5: Auto-settle
     print(f"\n[OK] Amount ({amount} HBAR) within threshold. Settling on Hedera...")
 
     nonce = w3.eth.get_transaction_count(account.address)
@@ -135,10 +171,12 @@ def run_agent():
         "amount_hbar": amount,
         "tx_hash": tx_hex,
         "paywall": paywall,
+        "service": service.get("name", "unknown"),
+        "gemini_reasoning": analysis.get("reason", ""),
     }
     log_to_hcs(event)
 
-    # Step 5: Unlock resource
+    # Step 6: Unlock resource
     print("\n--> Unlocking protected resource...")
     headers = {"X-Payment-Tx": tx_hex}
     unlock_res = requests.get(GATEWAY_URL, headers=headers)
