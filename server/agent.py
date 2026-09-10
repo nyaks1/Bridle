@@ -24,11 +24,16 @@ load_dotenv(dotenv_path=env_path)
 RPC_URL = os.getenv("HEDERA_RPC_URL", "https://testnet.hashio.io/api")
 PRIVATE_KEY = os.getenv("OPERATOR_PRIVATE_KEY")
 HEDERA_ACCOUNT_ID = os.getenv("HEDERA_ACCOUNT_ID")
-GATEWAY_URL = "http://127.0.0.1:8000/api/protected-resource"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SPENDING_THRESHOLD_HBAR = float(os.getenv("SPENDING_THRESHOLD_HBAR", "5.0"))
 HCS_TOPIC_ID = os.getenv("HCS_TOPIC_ID", "")
 AGENT_TASK = os.getenv("AGENT_TASK", "Get current weather data for Cape Town, South Africa")
+
+# Endpoints to try
+ENDPOINTS = [
+    {"url": "http://127.0.0.1:8000/api/protected-resource", "name": "Weather API"},
+    {"url": "http://127.0.0.1:8000/api/premium-data", "name": "Premium Analytics"},
+]
 
 # Validate
 if not PRIVATE_KEY:
@@ -119,26 +124,23 @@ Respond with JSON:
     except json.JSONDecodeError:
         return {"relevant": True, "reason": "unable to parse, defaulting to relevant", "value_assessment": "medium"}
 
-def run_agent():
-    """Main agent loop."""
-    print("=" * 60)
-    print("BRIDLE AGENT - x402 Payment Gateway")
-    print("=" * 60)
-    print(f"Agent Wallet: {account.address}")
-    balance_wei = w3.eth.get_balance(account.address)
-    print(f"Balance: {w3.from_wei(balance_wei, 'ether')} HBAR")
-    print(f"Threshold: {SPENDING_THRESHOLD_HBAR} HBAR")
-    print(f"Task: {AGENT_TASK}")
-    print("=" * 60)
+def process_endpoint(endpoint: dict) -> bool:
+    """Try to access a gated endpoint. Returns True if successful."""
+    url = endpoint["url"]
+    name = endpoint["name"]
+
+    print(f"\n{'='*60}")
+    print(f"Trying: {name} ({url})")
+    print('='*60)
 
     # Step 1: Request gated resource
-    print(f"\n--> Requesting {GATEWAY_URL}...")
-    res = requests.get(GATEWAY_URL)
+    print(f"\n--> Requesting {url}...")
+    res = requests.get(url)
 
     if res.status_code != 402:
         print(f"Unexpected status: {res.status_code}")
         print(res.text)
-        return
+        return False
 
     # Step 2: Parse 402 challenge
     challenge = res.json()
@@ -156,7 +158,7 @@ def run_agent():
 
     if not analysis.get("relevant", True):
         print(f"\n[SKIP] Service not relevant to task: {analysis.get('reason')}")
-        return
+        return False
 
     # Step 4: Policy gate — deterministic, not LLM
     if not is_payment_allowed(amount, SPENDING_THRESHOLD_HBAR):
@@ -171,7 +173,7 @@ def run_agent():
         }
         log_to_hcs(event)
         print(f"\n[BLOCKED] Payment of {amount} HBAR rejected by policy.")
-        return
+        return False
 
     # Step 5: Auto-settle
     print(f"\n[OK] Amount ({amount} HBAR) within threshold. Settling on Hedera...")
@@ -195,7 +197,7 @@ def run_agent():
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     if receipt.get("status") != 1:
         print("[ERROR] Transaction failed on-chain.")
-        return
+        return False
 
     print("[SUCCESS] Payment settled on Hedera Testnet.")
 
@@ -213,10 +215,42 @@ def run_agent():
     # Step 6: Unlock resource
     print("\n--> Unlocking protected resource...")
     headers = {"X-Payment-Tx": tx_hex}
-    unlock_res = requests.get(GATEWAY_URL, headers=headers)
+    unlock_res = requests.get(url, headers=headers)
 
     print(f"\nFinal Response ({unlock_res.status_code}):")
     print(json.dumps(unlock_res.json(), indent=2))
+    return True
+
+def run_agent():
+    """Main agent loop."""
+    print("=" * 60)
+    print("BRIDLE AGENT - x402 Payment Gateway")
+    print("=" * 60)
+    print(f"Agent Wallet: {account.address}")
+    balance_wei = w3.eth.get_balance(account.address)
+    print(f"Balance: {w3.from_wei(balance_wei, 'ether')} HBAR")
+    print(f"Threshold: {SPENDING_THRESHOLD_HBAR} HBAR")
+    print(f"Task: {AGENT_TASK}")
+    print(f"Endpoints: {len(ENDPOINTS)}")
+    print("=" * 60)
+
+    settled = 0
+    blocked = 0
+
+    for endpoint in ENDPOINTS:
+        success = process_endpoint(endpoint)
+        if success:
+            settled += 1
+        else:
+            blocked += 1
+
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print(f"Settled: {settled}")
+    print(f"Blocked: {blocked}")
+    print(f"Total events logged to HCS: {settled + blocked}")
+    print("=" * 60)
 
 if __name__ == "__main__":
     run_agent()
