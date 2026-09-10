@@ -47,9 +47,10 @@ paywall_target = challenge.get("paywall_contract")
 
 # 3. Policy Gate: Check threshold
 if amount_hbar > SPENDING_THRESHOLD_HBAR:
-    print(f"\n[ALERT] Amount ({amount_hbar} HBAR) exceeds auto-approval threshold ({SPENDING_THRESHOLD_HBAR} HBAR).")
-    print("--> Pausing for hardware confirmation (Ledger prompt required)...")
-    # In full integration, Nyaks' Ledger CLI hook fires here
+    print(f"\n[BLOCKED] Amount ({amount_hbar} HBAR) exceeds policy threshold ({SPENDING_THRESHOLD_HBAR} HBAR).")
+    print("--> Payment rejected. Rejection logged to HCS.")
+    # TODO: Log rejection to HCS
+    exit(0)
 else:
     print(f"\n[OK] Amount ({amount_hbar} HBAR) within threshold ({SPENDING_THRESHOLD_HBAR} HBAR). Auto-settling on Hedera...")
 
