@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 import httpx
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 # ── Environment ──────────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -39,8 +40,7 @@ if not HEDERA_ACCOUNT_ID:
 clean_key = PRIVATE_KEY if PRIVATE_KEY.startswith("0x") else f"0x{PRIVATE_KEY}"
 
 # ── Gemini ──────────────────────────────────────────────────────────────
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-3.6-flash")
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ── HCS audit logging ───────────────────────────────────────────────────
 _hedera_client = None
@@ -101,9 +101,10 @@ Respond with JSON:
   "reason": "one-line explanation",
   "value_assessment": "low/medium/high"
 }}"""
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.GenerationConfig(
+    response = gemini_client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
             temperature=0.1,
             response_mime_type="application/json",
         ),

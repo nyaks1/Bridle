@@ -39,7 +39,7 @@ Policy gate (deterministic, never LLM)
    │
    ├─ under threshold ──► x402 payment via Blocky402 facilitator
    │                        │
-   │                        ├─ settle on Hedera (HTS tokens)
+   │                        ├─ settle on Hedera (native HBAR)
    │                        ├─ log to HCS
    │                        └─ unlock resource
    │
