@@ -2,7 +2,7 @@
 
 An x402 payment gateway that lets AI agents pay for services autonomously on Hedera — with a policy engine that blocks high-value transactions and writes every decision to an immutable audit trail.
 
-Built for ETHGlobal Online 2026.
+Built for ETHOnline 2026.
 
 ---
 
@@ -14,12 +14,13 @@ AI agents are starting to hold wallets and spend money on their own — calling 
 
 Bridle sits between an agent and its money.
 
-1. The agent discovers a metered service and attempts to pay for it via **x402** (HTTP 402 Payment Required), settled on **Hedera** — sub-cent fees, no subscriptions, no leaked API keys.
-2. Payments under a set threshold settle automatically.
-3. Payments over the threshold are **blocked by policy** before any funds move.
-4. Every decision — payment settled or payment blocked — is written to **Hedera Consensus Service (HCS)** as a tamper-proof, timestamped record.
+1. The agent discovers a metered service and attempts to pay for it via **x402** (HTTP 402 Payment Required), settled on **Hedera** through the **Blocky402** facilitator — sub-cent fees, no subscriptions, no leaked API keys.
+2. Each API call is metered — the agent pays **per query**, not a flat rate.
+3. Payments under a set threshold settle automatically. Payments over the threshold are **blocked by policy** before any funds move.
+4. Settlement uses **Hedera Token Service (HTS)** fungible tokens — BridleCredits (BRC) — not raw HBAR.
+5. Every decision — payment settled or payment blocked — is written to **Hedera Consensus Service (HCS)** as a tamper-proof, timestamped record.
 
-Nobody, not even the operator, can quietly edit or delete the audit trail after the fact. "Here's the on-chain record showing the system said no" is the proof that safeguards fired.
+Nobody, not even the operator, can quietly edit or delete the audit trail after the fact.
 
 ## Architecture
 
@@ -34,44 +35,42 @@ Gemini classifies service relevance
    ├─ not relevant ──► skip
    │
    ▼
-Policy gate (deterministic, not LLM)
+Policy gate (deterministic, never LLM)
    │
-   ├─ under threshold ──► auto-settle on Hedera ──► log to HCS ──► unlock resource
+   ├─ under threshold ──► x402 payment via Blocky402 facilitator
+   │                        │
+   │                        ├─ settle on Hedera (HTS tokens)
+   │                        ├─ log to HCS
+   │                        └─ unlock resource
    │
    └─ over threshold ──► blocked by policy ──► log rejection to HCS
 ```
 
-## The audit trail
+## Key features
 
-Every agent action produces an HCS message:
-
-```json
-{
-  "event": "payment_blocked",
-  "agent": "0x...",
-  "amount_hbar": 10.0,
-  "threshold": 5.0,
-  "reason": "exceeds_policy_threshold",
-  "timestamp": "2026-09-13T14:32:01Z"
-}
-```
-
-```json
-{
-  "event": "payment_settled",
-  "agent": "0x...",
-  "amount_hbar": 1.0,
-  "tx_hash": "0x...",
-  "paywall": "0x...",
-  "timestamp": "2026-09-13T14:32:15Z"
-}
-```
-
-Immutable. Auditable. Verifiable by anyone.
+| Feature | How it works |
+|---|---|
+| **x402 protocol** | Standard HTTP 402 payment flow via `x402` Python SDK — no custom contracts needed |
+| **Blocky402 facilitator** | Payment verification and settlement delegated to Hedera-native facilitator |
+| **Pay-per-call metering** | Each endpoint has a per-query price (weather: $0.005, analytics: $0.05, forecast: $0.02) |
+| **HTS token settlement** | Payments in BridleCredits (BRC) — a Hedera Token Service fungible token — not raw HBAR |
+| **Policy engine** | Deterministic threshold check — never delegated to LLM |
+| **HCS audit trail** | Every payment or rejection is an immutable message on Hedera Consensus Service |
+| **Gemini classification** | Agent evaluates service relevance before paying |
 
 ## Track
 
-- Hedera — AI & Agentic Payments
+- Hedera — AI & Agentic Payments on Hedera ($6,000)
+
+### Hedera extra points checklist
+
+- [x] Verifiable payment audit trails on HCS
+- [x] Pay-per-call metering (per-query pricing, not flat rate)
+- [x] HTS tokens (BridleCredits fungible token)
+- [x] Blocky402 facilitator (Hedera-native x402 facilitator)
+- [ ] Multi-agent negotiation
+- [ ] Agent discovery / UCP directory
+- [ ] Scheduled / streamed payments
 
 ## Team
 
@@ -93,8 +92,9 @@ Bridle/
 │
 └── server/
     ├── requirements.txt       # Python dependencies
-    ├── main.py                # FastAPI x402 gateway & Hedera transaction verification
-    └── agent.py               # Gemini-powered agent (service classification, policy gate, HCS)
+    ├── main.py                # FastAPI x402 gateway with Blocky402 facilitator
+    ├── agent.py               # Gemini-powered agent (x402 client, policy gate, HCS)
+    └── hedera_hts.py          # HTS token creation, transfer, and query helpers
 ```
 
 ## Setup
@@ -118,24 +118,29 @@ Set variables:
 HEDERA_RPC_URL="https://testnet.hashio.io/api"
 OPERATOR_PRIVATE_KEY="0xYOUR_HEX_KEY_HERE"
 HEDERA_ACCOUNT_ID="0.0.YOUR_ACCOUNT_ID"
-PAYWALL_CONTRACT_ADDRESS="0x5442A862d2B11709045BE15015368c7dD6B9cfd8"
 GEMINI_API_KEY="your_gemini_api_key_here"
 HCS_TOPIC_ID="0.0.YOUR_TOPIC_ID"
+FACILITATOR_URL="https://api.testnet.blocky402.com"
+RESOURCE_SERVER_URL="http://127.0.0.1:8000"
+PAY_TO_ACCOUNT="0.0.RECIPIENT_ACCOUNT_ID"
+SPENDING_THRESHOLD_HBAR="5.0"
+AGENT_TASK="Get current weather data for Cape Town, South Africa"
 ```
 
-### 2. Deploy contract
+### 2. Create HTS token (optional, one-time)
 
 ```bash
-npm install
-npx hardhat compile
-npx hardhat run scripts/deploy.ts --network hedera_testnet
+cd server
+source venv/bin/activate
+python3 hedera_hts.py
 ```
+
+This creates a BridleCredits (BRC) token and prints the `HTS_TOKEN_ID` to add to `.env`.
 
 ### 3. Run the server
 
 ```bash
 cd server
-python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
@@ -149,14 +154,55 @@ source venv/bin/activate
 python3 agent.py
 ```
 
+## Endpoints
+
+| Endpoint | Per-query price | Description |
+|---|---|---|
+| `GET /api/weather?city=Cape Town` | $0.005 | Current weather conditions |
+| `GET /api/weather-intelligence?city=Cape Town` | $0.050 | Enterprise analytics with 5-day forecast and alerts |
+| `GET /api/forecast?city=Cape Town&days=3` | $0.020 | Batch forecast retrieval |
+| `GET /api/health` | Free | Server status and configuration |
+
+## The audit trail
+
+Every agent action produces an HCS message:
+
+```json
+{
+  "event": "payment_settled",
+  "agent": "0xCC88957C879b2A65E63065eB42264045c200Cf7A",
+  "service": "Weather API",
+  "service_type": "weather_query",
+  "price": "$0.005",
+  "tx": "0.0.10465769@1726100000.000000000",
+  "timestamp": "2026-09-11T12:00:00Z"
+}
+```
+
+```json
+{
+  "event": "payment_blocked",
+  "agent": "0xCC88957C879b2A65E63065eB42264045c200Cf7A",
+  "service": "Premium Analytics",
+  "service_type": "analytics_run",
+  "reason": "exceeds_policy_threshold",
+  "timestamp": "2026-09-11T12:00:05Z"
+}
+```
+
+Immutable. Auditable. Verifiable by anyone.
+
 ## Verification
 
-1. Agent requests `http://127.0.0.1:8000/api/protected-resource`
-2. Server returns `402 Payment Required` with paywall contract details
-3. Agent checks threshold — under limit auto-settles, over limit blocks
-4. Agent pays via Hedera, submits tx hash in `X-Payment-Tx` header
-5. Server verifies on-chain, returns protected resource
-6. Both events (settled/blocked) appear in HCS topic as immutable records
+1. Agent requests `http://127.0.0.1:8000/api/weather`
+2. Server returns `402 Payment Required` with x402 payment requirements (Blocky402 facilitator, Hedera testnet)
+3. Gemini classifies the service as relevant to the agent's task
+4. Policy gate checks the price against the spending threshold — under limit
+5. Agent signs a Hedera `TransferTransaction` (fee payer = Blocky402 facilitator)
+6. Agent sends the signed transaction to Blocky402 for verification — passes
+7. Blocky402 settles the payment on Hedera testnet
+8. Agent accesses the protected resource with the payment proof
+9. Both events (settled/blocked) appear in HCS topic as immutable records
 
 ## License
 

@@ -1,108 +1,99 @@
 import os
 import json
-import time
+import asyncio
+import base64
 from pathlib import Path
 from datetime import datetime, timezone
-from dotenv import load_dotenv
-import requests
-import google.generativeai as genai
-from web3 import Web3
-from hiero_sdk_python import (
-    Client,
-    TopicCreateTransaction,
-    TopicMessageSubmitTransaction,
-    AccountId,
-    PrivateKey,
-    TopicId,
-)
 
-# Load environment
+from dotenv import load_dotenv
+import httpx
+import google.generativeai as genai
+
+# ── Environment ──────────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-# Configuration
-RPC_URL = os.getenv("HEDERA_RPC_URL", "https://testnet.hashio.io/api")
 PRIVATE_KEY = os.getenv("OPERATOR_PRIVATE_KEY")
-HEDERA_ACCOUNT_ID = os.getenv("HEDERA_ACCOUNT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SPENDING_THRESHOLD_HBAR = float(os.getenv("SPENDING_THRESHOLD_HBAR", "5.0"))
+HEDERA_ACCOUNT_ID = os.getenv("HEDERA_ACCOUNT_ID")
+PAY_TO_ACCOUNT = os.getenv("PAY_TO_ACCOUNT", HEDERA_ACCOUNT_ID)
 HCS_TOPIC_ID = os.getenv("HCS_TOPIC_ID", "")
 AGENT_TASK = os.getenv("AGENT_TASK", "Get current weather data for Cape Town, South Africa")
+RESOURCE_SERVER_URL = os.getenv("RESOURCE_SERVER_URL", "http://127.0.0.1:8000")
+SPENDING_THRESHOLD_USD = float(os.getenv("SPENDING_THRESHOLD_HBAR", "5.0"))
+FACILITATOR_URL = os.getenv("FACILITATOR_URL", "https://api.testnet.blocky402.com")
 
-# Endpoints to try
 ENDPOINTS = [
-    {"url": "http://127.0.0.1:8000/api/protected-resource", "name": "Weather API"},
-    {"url": "http://127.0.0.1:8000/api/premium-data", "name": "Premium Analytics"},
+    {"path": "/api/weather",              "name": "Weather API",       "service_type": "weather_query"},
+    {"path": "/api/weather-intelligence", "name": "Premium Analytics", "service_type": "analytics_run"},
+    {"path": "/api/forecast",             "name": "Forecast API",      "service_type": "forecast_batch"},
 ]
 
-# Validate
 if not PRIVATE_KEY:
-    raise ValueError("OPERATOR_PRIVATE_KEY not set in .env")
+    raise ValueError("OPERATOR_PRIVATE_KEY not set")
 if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY not set in .env")
+    raise ValueError("GEMINI_API_KEY not set")
+if not HEDERA_ACCOUNT_ID:
+    raise ValueError("HEDERA_ACCOUNT_ID not set")
 
-# Initialize
-w3 = Web3(Web3.HTTPProvider(RPC_URL))
 clean_key = PRIVATE_KEY if PRIVATE_KEY.startswith("0x") else f"0x{PRIVATE_KEY}"
-account = w3.eth.account.from_key(clean_key)
 
+# ── Gemini ──────────────────────────────────────────────────────────────
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-3.6-flash")
 
-# Hedera client for HCS
-hedera_client = Client.for_testnet()
-hedera_account_id = AccountId.from_string(HEDERA_ACCOUNT_ID)
-hedera_private_key = PrivateKey.from_string_ecdsa(PRIVATE_KEY)
-hedera_client.set_operator(hedera_account_id, hedera_private_key)
+# ── HCS audit logging ───────────────────────────────────────────────────
+_hedera_client = None
 
-def create_hcs_topic() -> str:
-    """Create a new HCS topic for audit logging. Returns topic ID."""
-    transaction = TopicCreateTransaction(memo="Bridle Audit Trail")
-    receipt = transaction.freeze_with(hedera_client).execute(hedera_client)
-    topic_id = receipt.topic_id
-    print(f"[HCS] Created topic: {topic_id}")
-    return str(topic_id)
+def _get_hedera_client():
+    global _hedera_client
+    if _hedera_client is None:
+        from hiero_sdk_python import Client, AccountId, PrivateKey
+        _hedera_client = Client.for_testnet()
+        aid = AccountId.from_string(HEDERA_ACCOUNT_ID)
+        key = PrivateKey.from_string_ecdsa(clean_key)
+        _hedera_client.set_operator(aid, key)
+    return _hedera_client
 
 def log_to_hcs(event: dict) -> str:
-    """Log an event to Hedera Consensus Service.
-    Returns the transaction ID or empty string if no topic configured."""
     if not HCS_TOPIC_ID:
-        print("[HCS] No topic ID configured, skipping log")
         return ""
-
     event["timestamp"] = datetime.now(timezone.utc).isoformat()
     message = json.dumps(event)
-
     try:
-        topic_id = TopicId.from_string(HCS_TOPIC_ID)
-        transaction = (
+        from hiero_sdk_python import TopicMessageSubmitTransaction, TopicId
+        client = _get_hedera_client()
+        if not client:
+            return ""
+        tid = TopicId.from_string(HCS_TOPIC_ID)
+        tx = (
             TopicMessageSubmitTransaction()
-            .set_topic_id(topic_id)
+            .set_topic_id(tid)
             .set_message(message)
-            .freeze_with(hedera_client)
-            .execute(hedera_client)
+            .freeze_with(client)
+            .execute(client)
         )
-        tx_id = str(transaction.transaction_id)
-        print(f"[HCS] Logged: {event.get('event', 'unknown')} - txId={tx_id}")
-        return tx_id
+        return str(tx.transaction_id)
     except Exception as e:
-        print(f"[HCS] Error logging: {e}")
+        print(f"  [HCS] Error: {e}")
         return ""
 
-def is_payment_allowed(amount: float, threshold: float) -> bool:
-    """Deterministic policy check — never delegate this to LLM."""
-    return amount <= threshold
+# ── Policy gate (deterministic, never LLM) ─────────────────────────────
+PRICING_USD = {
+    "weather_query": 0.005,
+    "analytics_run": 0.050,
+    "forecast_batch": 0.020,
+}
 
-def classify_service(service: dict, task: str) -> dict:
-    """Use Gemini to analyze if a service is relevant to our task."""
-    service_desc = json.dumps(service, indent=2)
+def is_payment_allowed(service_type: str) -> bool:
+    return PRICING_USD.get(service_type, 999) <= SPENDING_THRESHOLD_USD
 
-    prompt = f"""Analyze this service and determine if it's relevant to our task.
+# ── Gemini service classifier ──────────────────────────────────────────
+def classify_service(endpoint: dict, task: str) -> dict:
+    prompt = f"""Analyze this API endpoint and determine relevance.
 
-Service:
-{service_desc}
-
-Our task: {task}
+Endpoint: {json.dumps(endpoint, indent=2)}
+Task: {task}
 
 Respond with JSON:
 {{
@@ -110,147 +101,241 @@ Respond with JSON:
   "reason": "one-line explanation",
   "value_assessment": "low/medium/high"
 }}"""
-
     response = model.generate_content(
         prompt,
         generation_config=genai.GenerationConfig(
             temperature=0.1,
-            response_mime_type="application/json"
-        )
+            response_mime_type="application/json",
+        ),
     )
-
     try:
         return json.loads(response.text)
     except json.JSONDecodeError:
-        return {"relevant": True, "reason": "unable to parse, defaulting to relevant", "value_assessment": "medium"}
+        return {"relevant": True, "reason": "parse failure, defaulting to relevant", "value_assessment": "medium"}
 
-def process_endpoint(endpoint: dict) -> bool:
-    """Try to access a gated endpoint. Returns True if successful."""
-    url = endpoint["url"]
+# ── Hedera x402 signing ────────────────────────────────────────────────
+def get_fee_payer() -> str:
+    try:
+        resp = httpx.get(f"{FACILITATOR_URL}/supported", timeout=10)
+        data = resp.json()
+        return data.get("signers", {}).get("hedera:*", ["0.0.7162784"])[0]
+    except Exception:
+        return "0.0.7162784"
+
+def sign_hedera_payment(amount_tinybars: int, pay_to: str, fee_payer: str,
+                         asset: str = "0.0.0") -> dict:
+    """Sign a Hedera TransferTransaction and return x402 PaymentPayload."""
+    from hiero_sdk_python import (
+        Client, AccountId, PrivateKey, TransferTransaction, Hbar, TransactionId,
+    )
+
+    client = Client.for_testnet()
+    payer_id = AccountId.from_string(HEDERA_ACCOUNT_ID)
+    payee_id = AccountId.from_string(pay_to)
+    fee_payer_id = AccountId.from_string(fee_payer)
+    key = PrivateKey.from_string_ecdsa(clean_key)
+    client.set_operator(payer_id, key)
+
+    # Generate tx with facilitator as fee payer
+    tx_id = TransactionId.generate(fee_payer_id)
+
+    tx = TransferTransaction().set_transaction_id(tx_id)
+
+    if asset == "0.0.0":
+        tx.add_hbar_transfer(payer_id, Hbar.from_tinybars(-amount_tinybars))
+        tx.add_hbar_transfer(payee_id, Hbar.from_tinybars(amount_tinybars))
+    else:
+        from hiero_sdk_python import TokenId
+        tx.add_token_transfer(TokenId.from_string(asset), payer_id, -amount_tinybars)
+        tx.add_token_transfer(TokenId.from_string(asset), payee_id, amount_tinybars)
+
+    frozen = tx.freeze_with(client)
+    signed = frozen.sign(key)
+
+    tx_bytes = signed.to_bytes()
+    payload_b64 = base64.b64encode(tx_bytes).decode("utf-8")
+
+    return {
+        "x402Version": 2,
+        "scheme": "exact",
+        "network": "hedera:testnet",
+        "accepted": {
+            "scheme": "exact",
+            "network": "hedera:testnet",
+            "amount": str(amount_tinybars),
+            "payTo": pay_to,
+            "maxTimeoutSeconds": 300,
+            "asset": asset,
+            "extra": {"feePayer": fee_payer},
+        },
+        "payload": {
+            "transaction": payload_b64,
+        },
+    }
+
+def verify_with_facilitator(payment_payload: dict, payment_requirements: dict) -> dict:
+    resp = httpx.post(
+        f"{FACILITATOR_URL}/verify",
+        json={"x402Version": 2, "paymentPayload": payment_payload, "paymentRequirements": payment_requirements},
+        timeout=30,
+    )
+    return resp.json()
+
+def settle_with_facilitator(payment_payload: dict, payment_requirements: dict) -> dict:
+    resp = httpx.post(
+        f"{FACILITATOR_URL}/settle",
+        json={"x402Version": 2, "paymentPayload": payment_payload, "paymentRequirements": payment_requirements},
+        timeout=60,
+    )
+    return resp.json()
+
+# ── Process endpoint ────────────────────────────────────────────────────
+async def process_endpoint(endpoint: dict) -> bool:
+    url = f"{RESOURCE_SERVER_URL}{endpoint['path']}"
     name = endpoint["name"]
+    service_type = endpoint["service_type"]
 
     print(f"\n{'='*60}")
-    print(f"Trying: {name} ({url})")
-    print('='*60)
+    print(f"  {name} — {url}")
+    print(f"{'='*60}")
 
-    # Step 1: Request gated resource
-    print(f"\n--> Requesting {url}...")
-    res = requests.get(url)
-
-    if res.status_code != 402:
-        print(f"Unexpected status: {res.status_code}")
-        print(res.text)
-        return False
-
-    # Step 2: Parse 402 challenge
-    challenge = res.json()
-    print("Received 402 Payment Required:")
-    print(json.dumps(challenge, indent=2))
-
-    amount = float(challenge.get("amount_hbar", 0))
-    paywall = challenge.get("paywall_contract")
-    service = challenge.get("service", {})
-
-    # Step 3: Gemini analyzes the service
-    print("\n--> Gemini analyzing service relevance...")
-    analysis = classify_service(service, AGENT_TASK)
-    print(f"Gemini analysis: {json.dumps(analysis, indent=2)}")
+    # Gemini classifies
+    print("  [Gemini] Analyzing relevance...")
+    analysis = classify_service(endpoint, AGENT_TASK)
+    print(f"  [Gemini] {json.dumps(analysis)}")
 
     if not analysis.get("relevant", True):
-        print(f"\n[SKIP] Service not relevant to task: {analysis.get('reason')}")
+        print(f"  [SKIP] Not relevant: {analysis.get('reason')}")
+        log_to_hcs({
+            "event": "service_skipped",
+            "agent": HEDERA_ACCOUNT_ID,
+            "service": name,
+            "reason": analysis.get("reason"),
+        })
         return False
 
-    # Step 4: Policy gate — deterministic, not LLM
-    if not is_payment_allowed(amount, SPENDING_THRESHOLD_HBAR):
-        event = {
+    # Policy gate
+    if not is_payment_allowed(service_type):
+        print(f"  [BLOCKED] Policy rejects {service_type}")
+        log_to_hcs({
             "event": "payment_blocked",
-            "agent": account.address,
-            "amount_hbar": amount,
-            "threshold": SPENDING_THRESHOLD_HBAR,
+            "agent": HEDERA_ACCOUNT_ID,
+            "service": name,
+            "service_type": service_type,
             "reason": "exceeds_policy_threshold",
-            "service": service.get("name", "unknown"),
             "gemini_reasoning": analysis.get("reason", ""),
-        }
-        log_to_hcs(event)
-        print(f"\n[BLOCKED] Payment of {amount} HBAR rejected by policy.")
+        })
         return False
 
-    # Step 5: Auto-settle
-    print(f"\n[OK] Amount ({amount} HBAR) within threshold. Settling on Hedera...")
+    # Step 1: Request protected resource
+    print(f"  [x402] Requesting {url}...")
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, timeout=30)
 
-    nonce = w3.eth.get_transaction_count(account.address)
-    tx = {
-        "nonce": nonce,
-        "to": Web3.to_checksum_address(paywall),
-        "value": w3.to_wei(amount, "ether"),
-        "gas": 100000,
-        "gasPrice": w3.eth.gas_price,
-        "chainId": 296,
-    }
+        if response.status_code != 402:
+            print(f"  [x402] Unexpected status: {response.status_code}")
+            return False
 
-    print("Broadcasting transaction...")
-    signed_tx = w3.eth.account.sign_transaction(tx, private_key=clean_key)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-    tx_hex = w3.to_hex(tx_hash)
-    print(f"Transaction sent: {tx_hex}")
+        print("  [x402] Got 402 — building Hedera payment...")
 
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    if receipt.get("status") != 1:
-        print("[ERROR] Transaction failed on-chain.")
+        # Parse payment requirements from response body
+        body = response.json()
+        amount_tinybars = int(body.get("amount_tinybars", 500000))
+        pay_to = body.get("pay_to", PAY_TO_ACCOUNT)
+        asset = body.get("asset", "0.0.0")
+        fee_payer = body.get("fee_payer", get_fee_payer())
+
+    # Step 2: Sign payment
+    print(f"  [x402] Signing {amount_tinybars} tinybars...")
+    payment_payload = sign_hedera_payment(amount_tinybars, pay_to, fee_payer, asset)
+    payment_reqs = payment_payload["accepted"]
+
+    # Step 3: Verify with facilitator
+    print("  [x402] Verifying with Blocky402...")
+    verify_result = verify_with_facilitator(payment_payload, payment_reqs)
+    print(f"  [x402] Verify: {json.dumps(verify_result)}")
+
+    if not verify_result.get("isValid", False):
+        reason = verify_result.get("invalidReason", "unknown")
+        print(f"  [x402] Verification failed: {reason}")
+        log_to_hcs({
+            "event": "payment_blocked",
+            "agent": HEDERA_ACCOUNT_ID,
+            "service": name,
+            "service_type": service_type,
+            "reason": f"verification_failed: {reason}",
+            "gemini_reasoning": analysis.get("reason", ""),
+        })
         return False
 
-    print("[SUCCESS] Payment settled on Hedera Testnet.")
+    # Step 4: Settle with facilitator
+    print("  [x402] Settling on Hedera via Blocky402...")
+    settle_result = settle_with_facilitator(payment_payload, payment_reqs)
+    print(f"  [x402] Settle: {json.dumps(settle_result)}")
 
-    event = {
+    if not settle_result.get("success", False):
+        print(f"  [x402] Settlement failed")
+        return False
+
+    tx_hash = settle_result.get("transaction", "")
+    print(f"  [x402] Settled: {tx_hash}")
+
+    log_to_hcs({
         "event": "payment_settled",
-        "agent": account.address,
-        "amount_hbar": amount,
-        "tx_hash": tx_hex,
-        "paywall": paywall,
-        "service": service.get("name", "unknown"),
+        "agent": HEDERA_ACCOUNT_ID,
+        "service": name,
+        "service_type": service_type,
+        "amount_tinybars": amount_tinybars,
+        "tx": tx_hash,
         "gemini_reasoning": analysis.get("reason", ""),
-    }
-    log_to_hcs(event)
+    })
 
-    # Step 6: Unlock resource
-    print("\n--> Unlocking protected resource...")
-    headers = {"X-Payment-Tx": tx_hex}
-    unlock_res = requests.get(url, headers=headers)
+    # Step 5: Access protected resource with payment proof
+    print("  [x402] Accessing protected resource...")
+    x_payment_b64 = base64.b64encode(json.dumps(payment_payload).encode()).decode()
+    async with httpx.AsyncClient() as client:
+        resource_response = await client.get(
+            url,
+            headers={"X-PAYMENT": x_payment_b64},
+            timeout=30,
+        )
+        print(f"  [x402] Status: {resource_response.status_code}")
+        try:
+            data = resource_response.json()
+            print(f"  [x402] Response: {json.dumps(data, indent=2)}")
+        except Exception:
+            print(f"  [x402] Response: {resource_response.text[:500]}")
 
-    print(f"\nFinal Response ({unlock_res.status_code}):")
-    print(json.dumps(unlock_res.json(), indent=2))
     return True
 
-def run_agent():
-    """Main agent loop."""
+async def run_agent():
     print("=" * 60)
-    print("BRIDLE AGENT - x402 Payment Gateway")
+    print("  BRIDLE AGENT — x402 Hedera Payments (Blocky402)")
     print("=" * 60)
-    print(f"Agent Wallet: {account.address}")
-    balance_wei = w3.eth.get_balance(account.address)
-    print(f"Balance: {w3.from_wei(balance_wei, 'ether')} HBAR")
-    print(f"Threshold: {SPENDING_THRESHOLD_HBAR} HBAR")
-    print(f"Task: {AGENT_TASK}")
-    print(f"Endpoints: {len(ENDPOINTS)}")
+    print(f"  Account: {HEDERA_ACCOUNT_ID}")
+    print(f"  Facilitator: {FACILITATOR_URL}")
+    print(f"  Task: {AGENT_TASK}")
+    print(f"  Threshold: ${SPENDING_THRESHOLD_USD}")
+    print(f"  Endpoints: {len(ENDPOINTS)}")
     print("=" * 60)
 
     settled = 0
-    blocked = 0
+    skipped = 0
 
-    for endpoint in ENDPOINTS:
-        success = process_endpoint(endpoint)
+    for ep in ENDPOINTS:
+        success = await process_endpoint(ep)
         if success:
             settled += 1
         else:
-            blocked += 1
+            skipped += 1
 
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    print(f"Settled: {settled}")
-    print(f"Blocked: {blocked}")
-    print(f"Total events logged to HCS: {settled + blocked}")
-    print("=" * 60)
+    print(f"\n{'='*60}")
+    print("  SUMMARY")
+    print(f"{'='*60}")
+    print(f"  Settled: {settled}")
+    print(f"  Skipped/Blocked: {skipped}")
+    print(f"  HCS Events Logged: {settled + skipped}")
+    print(f"{'='*60}")
 
 if __name__ == "__main__":
-    run_agent()
+    asyncio.run(run_agent())
