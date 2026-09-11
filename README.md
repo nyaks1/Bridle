@@ -171,7 +171,25 @@ RESOURCE_SERVER_URL="http://127.0.0.1:8000"
 HARDWARE_VETO_THRESHOLD_HBAR="1.0"
 ```
 
-### 2. Smart Contract Testing
+### 2. Python Virtual Environment Setup (venv)
+
+Create the Python virtual environment and install all dependencies:
+
+```bash
+# Create the virtual environment
+python3 -m venv server/venv
+
+# Activate the virtual environment
+source server/venv/bin/activate
+
+# Install required Python packages
+pip install -r server/requirements.txt
+```
+
+> [!TIP]
+> A root symlink (`venv -> server/venv`) is included, allowing you to run either `source server/venv/bin/activate` or `source venv/bin/activate`.
+
+### 3. Smart Contract Testing
 
 Run the Hardhat 3 unit test suite covering paywall payments, replay protection, and owner withdrawals:
 

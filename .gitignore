@@ -32,6 +32,8 @@
 
 # Python
 venv/
+venv
+server/venv/
 __pycache__/
 *.pyc
 *.log

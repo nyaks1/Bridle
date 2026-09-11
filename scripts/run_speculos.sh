@@ -17,6 +17,8 @@ else
     echo "--> Docker not detected or inactive. Launching native Speculos emulator bridge..."
     if [ -d "server/venv" ]; then
         PYTHON_EXEC="server/venv/bin/python"
+    elif [ -d "venv" ]; then
+        PYTHON_EXEC="venv/bin/python"
     else
         PYTHON_EXEC="python3"
     fi

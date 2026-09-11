@@ -13,6 +13,9 @@ echo "==========================================================================
 if [ -d "server/venv" ]; then
     PYTHON_EXEC="server/venv/bin/python"
     UVICORN_EXEC="server/venv/bin/uvicorn"
+elif [ -d "venv" ]; then
+    PYTHON_EXEC="venv/bin/python"
+    UVICORN_EXEC="venv/bin/uvicorn"
 else
     PYTHON_EXEC="python3"
     UVICORN_EXEC="uvicorn"
