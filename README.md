@@ -50,7 +50,7 @@ Policy gate (deterministic, never LLM)
 
 | Feature | How it works |
 |---|---|
-| **x402 protocol** | Standard HTTP 402 payment flow via `x402` Python SDK — no custom contracts needed |
+| **x402 protocol** | HTTP 402 payment flow — agent signs Hedera transactions, Blocky402 facilitator verifies and settles |
 | **Blocky402 facilitator** | Payment verification and settlement delegated to Hedera-native facilitator |
 | **Pay-per-call metering** | Each endpoint has a per-query price (weather: $0.005, analytics: $0.05, forecast: $0.02) |
 | **Native HBAR settlement** | Payments in native HBAR on Hedera — sub-cent fees, instant finality |
@@ -93,8 +93,7 @@ Bridle/
 └── server/
     ├── requirements.txt       # Python dependencies
     ├── main.py                # FastAPI x402 gateway with Blocky402 facilitator
-    ├── agent.py               # Gemini-powered agent (x402 client, policy gate, HCS)
-    └── hedera_hts.py          # HTS token creation, transfer, and query helpers
+    └── agent.py               # Gemini-powered agent (x402 client, policy gate, HCS)
 ```
 
 ## Setup
@@ -127,17 +126,7 @@ SPENDING_THRESHOLD_HBAR="0.01"
 AGENT_TASK="Get current weather data for Cape Town, South Africa"
 ```
 
-### 2. Create HTS token (optional, one-time)
-
-```bash
-cd server
-source venv/bin/activate
-python3 hedera_hts.py
-```
-
-This creates a BridleCredits (BRC) token and prints the `HTS_TOKEN_ID` to add to `.env`.
-
-### 3. Run the server
+### 2. Run the server
 
 ```bash
 cd server
@@ -146,7 +135,7 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-### 4. Run the agent
+### 3. Run the agent
 
 ```bash
 cd server
