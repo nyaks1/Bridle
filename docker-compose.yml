@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  speculos:
+    image: ghcr.io/ledgerhq/speculos:latest
+    container_name: bridle-ledger-speculos
+    restart: unless-stopped
+    ports:
+      - "5000:5000"   # HTTP REST API & Web UI
+      - "40000:40000" # APDU TCP socket
+    environment:
+      - SPECULOS_MODEL=nanosp
+      - SPECULOS_DISPLAY=headless
+    command: >
+      --model nanosp
+      --api-port 5000
+      --apdu-port 40000
+      --display headless
+      /app/apps/Ethereum.elf
+    volumes:
+      - ./speculos-apps:/app/apps:ro
+
