@@ -21,7 +21,7 @@ fi
 # Step 2: Ensure Speculos Emulator is active on port 5000
 echo -e "\n[1/5] Checking Ledger Speculos Emulator..."
 if curl -s http://127.0.0.1:5000/health >/dev/null 2>&1; then
-    echo "  ✅ Speculos Emulator running on http://127.0.0.1:5000"
+    echo "  [OK] Speculos Emulator running on http://127.0.0.1:5000"
 else
     echo "  Starting Speculos Emulator..."
     bash scripts/run_speculos.sh
@@ -31,14 +31,14 @@ fi
 # Step 3: Ensure Gateway Server is active on port 8000
 echo -e "\n[2/5] Checking Bridle Payment Gateway..."
 if curl -s http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
-    echo "  ✅ Bridle Gateway running on http://127.0.0.1:8000"
+    echo "  [OK] Bridle Gateway running on http://127.0.0.1:8000"
 else
     echo "  Starting Bridle Gateway in background..."
     nohup $UVICORN_EXEC server.server:app --host 127.0.0.1 --port 8000 > server.log 2>&1 &
     SERVER_PID=$!
     echo $SERVER_PID > server.pid
     sleep 2
-    echo "  ✅ Bridle Gateway started (PID: $SERVER_PID)"
+    echo "  [OK] Bridle Gateway started (PID: $SERVER_PID)"
 fi
 
 echo -e "\n================================================================================"

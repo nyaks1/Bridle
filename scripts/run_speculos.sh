@@ -36,9 +36,9 @@ fi
 # Verify health
 HEALTH=$(curl -s http://127.0.0.1:5000/health || echo "error")
 if [[ "$HEALTH" == *"healthy"* ]]; then
-    echo "--> ✅ Speculos Emulator is healthy on http://127.0.0.1:5000"
+    echo "--> [OK] Speculos Emulator is healthy on http://127.0.0.1:5000"
 else
-    echo "--> ⚠️ Waiting for Speculos emulator to become ready..."
+    echo "--> [WAIT] Waiting for Speculos emulator to become ready..."
     sleep 2
     curl -s http://127.0.0.1:5000/health || true
 fi

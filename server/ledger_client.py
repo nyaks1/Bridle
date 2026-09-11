@@ -81,3 +81,11 @@ class LedgerClient:
         resp = httpx.post(f"{self.base_url}/button/both", timeout=5.0)
         return resp.json()
 
+    def get_tx_status(self) -> Dict[str, Any]:
+        """Fetch current hardware transaction review/approval/veto status."""
+        try:
+            resp = httpx.get(f"{self.base_url}/tx-status", timeout=2.0)
+            return resp.json()
+        except Exception:
+            return {"status": "error"}
+

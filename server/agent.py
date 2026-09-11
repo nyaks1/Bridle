@@ -22,6 +22,7 @@ import os
 import sys
 import json
 import time
+import select
 import asyncio
 import base64
 from pathlib import Path
@@ -149,10 +150,10 @@ def log_to_hcs(event: dict) -> str:
             .execute(client)
         )
         tx_id = str(tx.transaction_id)
-        print(f"  [HCS] 📝 Logged to Topic {HCS_TOPIC_ID} (tx: {tx_id})")
+        print(f"  [HCS] Logged to Topic {HCS_TOPIC_ID} (tx: {tx_id})")
         return tx_id
     except Exception as e:
-        print(f"  [HCS] ⚠️ Logging error: {e}")
+        print(f"  [HCS] Logging error: {e}")
         return ""
 
 # ── Gemini Service Classifier ────────────────────────────────────────────
@@ -168,7 +169,7 @@ Respond with strictly valid JSON:
   "reason": "concise explanation",
   "value_assessment": "low/medium/high"
 }}"""
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             response = gemini_client.models.generate_content(
                 model="gemini-3.6-flash",
@@ -180,20 +181,32 @@ Respond with strictly valid JSON:
             )
             return json.loads(response.text)
         except Exception as e:
-            if attempt < 2:
-                time.sleep(1.5)
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                break
+            if attempt < 1:
+                time.sleep(0.5)
                 continue
-            print(f"  [Gemini] Model notice ({e}). Using heuristic classification fallback.")
-            task_lower = task.lower()
-            name_lower = endpoint.get("name", "").lower()
-            path_lower = endpoint.get("path", "").lower()
-            keywords = [w for w in task_lower.replace(",", "").split() if len(w) > 3]
-            is_relevant = any(w in name_lower or w in path_lower for w in keywords)
-            return {
-                "relevant": is_relevant,
-                "reason": f"Heuristic assessment: {'relevant to task keywords' if is_relevant else 'not primary match for task'}",
-                "value_assessment": "high" if is_relevant else "low",
-            }
+            break
+
+    # Domain-aware heuristic classification fallback
+    task_lower = task.lower()
+    name_lower = endpoint.get("name", "").lower()
+    path_lower = endpoint.get("path", "").lower()
+
+    # Weather and climate domain mapping
+    weather_domain = {"weather", "climate", "forecast", "archive", "meteorology", "atmospheric", "temp", "intelligence", "report"}
+    has_weather_intent = any(w in task_lower for w in weather_domain)
+    is_weather_endpoint = any(w in name_lower or w in path_lower for w in weather_domain)
+
+    keywords = [w for w in task_lower.replace(",", "").split() if len(w) > 3]
+    is_relevant = (has_weather_intent and is_weather_endpoint) or any(w in name_lower or w in path_lower for w in keywords)
+
+    return {
+        "relevant": is_relevant,
+        "reason": f"Heuristic assessment: {'relevant to task domain and keywords' if is_relevant else 'not primary match for task'}",
+        "value_assessment": "high" if is_relevant else "low",
+    }
 
 # ── Facilitator & Signing Helpers ────────────────────────────────────────
 def get_fee_payer() -> str:
@@ -258,18 +271,18 @@ def execute_hardware_veto_loop(
     name = endpoint["name"]
     target_contract = Web3.to_checksum_address(PAYWALL_ADDRESS)
 
-    border = "═" * 60
-    print(f"\n╔{border}╗")
-    print(f"║  🛡️  [HARDWARE VETO HOOK TRIGGERED]                       ║")
-    print(f"╠{border}╣")
-    print(f"║  Endpoint: {name.ljust(47)}║")
-    print(f"║  Amount: {str(cost_hbar).ljust(5)} HBAR (> Threshold {HARDWARE_VETO_THRESHOLD_HBAR} HBAR)             ║")
-    print(f"║  Policy: Execution paused. Hardware confirmation required. ║")
-    print(f"║  Target Contract: {target_contract.ljust(41)}║")
-    print(f"╚{border}╝\n")
+    border = "=" * 60
+    print(f"\n+{border}+")
+    print(f"|  [HARDWARE VETO HOOK TRIGGERED]                           |")
+    print(f"+{border}+")
+    print(f"|  Endpoint: {name.ljust(47)}|")
+    print(f"|  Amount: {str(cost_hbar).ljust(5)} HBAR (> Threshold {HARDWARE_VETO_THRESHOLD_HBAR} HBAR)             |")
+    print(f"|  Policy: Execution paused. Hardware confirmation required. |")
+    print(f"|  Target Contract: {target_contract.ljust(41)}|")
+    print(f"+{border}+\n")
 
     if not ledger_client.is_available():
-        print("  [Ledger] ⚠️ Speculos emulator not responding at http://127.0.0.1:5000!")
+        print("  [Ledger] Speculos emulator not responding at http://127.0.0.1:5000!")
         print("  [Ledger] Starting Speculos emulator bridge...")
         import subprocess
         subprocess.run(["bash", "scripts/run_speculos.sh"], capture_output=True)
@@ -294,7 +307,7 @@ def execute_hardware_veto_loop(
     )
 
     if force_veto:
-        print("  [Ledger] 🛑 Human Operator pressed [LEFT BUTTON] -> VETO TRANSACTION!")
+        print("  [Ledger] Veto flag enabled -> VETO TRANSACTION.")
         veto_res = ledger_client.veto_transaction()
         print(f"  [Ledger] Speculos Response: {veto_res.get('message', 'Action refused by user')}")
         log_to_hcs({
@@ -312,35 +325,73 @@ def execute_hardware_veto_loop(
     if review_res.get("status") == "approved":
         signed_raw = review_res.get("signed_tx_raw")
     else:
-        # Prompt human operator in CLI if interactive
-        if not auto_approve:
-            print("\n  👉 Please confirm on the Speculos screen:")
-            print("     Type 'y' to APPROVE (press both buttons) or 'n' to VETO (press left button):")
-            choice = input("     [y/n]: ").strip().lower()
-            if choice != "y":
-                print("  [Ledger] 🛑 Operator selected VETO.")
-                ledger_client.veto_transaction()
-                log_to_hcs({
-                    "event": "payment_rejected_by_hardware_veto",
-                    "agent": HEDERA_ACCOUNT_ID,
-                    "device": device_address,
-                    "service": name,
-                    "amount_hbar": cost_hbar,
-                    "reason": "operator_manual_veto"
-                })
-                return None
-            confirm_res = ledger_client.approve_transaction()
-            signed_raw = confirm_res.get("signed_tx_raw")
-        else:
-            confirm_res = ledger_client.approve_transaction()
-            signed_raw = confirm_res.get("signed_tx_raw")
+        # Interactive mode: poll both Speculos Web GUI and listen on terminal stdin
+        print("\n  ------------------------------------------------------------")
+        print("  [Ledger] Execution PAUSED: Awaiting human hardware decision.")
+        print("  [Ledger] -> Web Emulator: http://localhost:5000 (click APPROVE or VETO)")
+        print("  [Ledger] -> Terminal:     Type 'y' to APPROVE, 'n' to VETO, then Enter")
+        print("  ------------------------------------------------------------\n")
 
-    print(f"  [Ledger] ✅ Hardware signature received! Broadcasting to Hedera Testnet...")
+        start_time = time.time()
+        timeout_seconds = 180
+        user_decision = None
+        signed_raw = None
+
+        while time.time() - start_time < timeout_seconds:
+            # 1. Check if decision arrived via Speculos Web GUI
+            status_info = ledger_client.get_tx_status()
+            hw_status = status_info.get("status")
+
+            if hw_status == "approved" and status_info.get("signed_tx_raw"):
+                print("  [Ledger] Hardware APPROVAL detected from Speculos Web GUI.")
+                signed_raw = status_info.get("signed_tx_raw")
+                user_decision = "approved"
+                break
+            elif hw_status == "vetoed":
+                print("  [Ledger] Hardware VETO detected from Speculos Web GUI (status: 0x6985).")
+                user_decision = "vetoed"
+                break
+
+            # 2. Check if user typed into terminal
+            if sys.stdin.isatty():
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.4)
+                if rlist:
+                    line = sys.stdin.readline().strip().lower()
+                    if line in ("y", "yes", "approve"):
+                        print("  [Ledger] Operator confirmed APPROVAL via terminal input.")
+                        confirm_res = ledger_client.approve_transaction()
+                        signed_raw = confirm_res.get("signed_tx_raw")
+                        user_decision = "approved"
+                        break
+                    elif line in ("n", "no", "veto"):
+                        print("  [Ledger] Operator confirmed VETO via terminal input.")
+                        ledger_client.veto_transaction()
+                        user_decision = "vetoed"
+                        break
+                    else:
+                        print("  [Ledger] Unrecognized input. Enter 'y' to approve or 'n' to veto:")
+            else:
+                time.sleep(0.4)
+
+        if user_decision != "approved" or not signed_raw:
+            print("  [Ledger] Transaction aborted. Zero funds transferred.")
+            log_to_hcs({
+                "event": "payment_rejected_by_hardware_veto",
+                "agent": HEDERA_ACCOUNT_ID,
+                "device": device_address,
+                "service": name,
+                "amount_hbar": cost_hbar,
+                "threshold_hbar": HARDWARE_VETO_THRESHOLD_HBAR,
+                "reason": "operator_hardware_veto (status: 0x6985)" if user_decision == "vetoed" else "hardware_review_timeout"
+            })
+            return None
+
+    print(f"  [Ledger] Hardware signature received. Broadcasting to Hedera Testnet...")
     try:
         raw_bytes = bytes.fromhex(signed_raw[2:] if signed_raw.startswith("0x") else signed_raw)
         tx_hash_bytes = w3.eth.send_raw_transaction(raw_bytes)
         tx_hash = w3.to_hex(tx_hash_bytes)
-        print(f"  [Ledger] 🚀 Broadcast successful! Tx Hash: {tx_hash}")
+        print(f"  [Ledger] Broadcast successful. Tx Hash: {tx_hash}")
 
         log_to_hcs({
             "event": "payment_settled_with_hardware_approval",
@@ -355,7 +406,7 @@ def execute_hardware_veto_loop(
         return tx_hash
 
     except Exception as e:
-        print(f"  [Ledger] ⚠️ Broadcast failed: {e}")
+        print(f"  [Ledger] Broadcast warning/failure: {e}")
         # Even if Hedera RPC returned nonce collision, use hash if present
         return None
 
@@ -363,7 +414,8 @@ def execute_hardware_veto_loop(
 async def process_endpoint(
     endpoint: dict,
     auto_approve_hardware: bool = False,
-    force_hardware_veto: bool = False
+    force_hardware_veto: bool = False,
+    is_explicit_target: bool = False
 ) -> bool:
     url = f"{RESOURCE_SERVER_URL}{endpoint['path']}"
     name = endpoint["name"]
@@ -382,14 +434,17 @@ async def process_endpoint(
     print(f"  [Gemini] Relevant: {analysis.get('relevant')} | Reason: {analysis.get('reason')}")
 
     if not analysis.get("relevant", True):
-        print(f"  [SKIP] Skipping endpoint: {analysis.get('reason')}")
-        log_to_hcs({
-            "event": "service_skipped",
-            "agent": HEDERA_ACCOUNT_ID,
-            "service": name,
-            "reason": analysis.get("reason"),
-        })
-        return False
+        if is_explicit_target:
+            print(f"  [OVERRIDE] Explicit CLI target specified ({endpoint['path']}). Proceeding with policy evaluation.")
+        else:
+            print(f"  [SKIP] Skipping endpoint: {analysis.get('reason')}")
+            log_to_hcs({
+                "event": "service_skipped",
+                "agent": HEDERA_ACCOUNT_ID,
+                "service": name,
+                "reason": analysis.get("reason"),
+            })
+            return False
 
     # Stage 2: Deterministic Policy Check (Hardware Veto vs Autonomous Signing)
     if cost_hbar > HARDWARE_VETO_THRESHOLD_HBAR:
@@ -499,7 +554,12 @@ async def run_agent(auto_approve: bool = False, force_veto: bool = False, single
     blocked = 0
 
     for ep in selected:
-        ok = await process_endpoint(ep, auto_approve_hardware=auto_approve, force_hardware_veto=force_veto)
+        ok = await process_endpoint(
+            ep,
+            auto_approve_hardware=auto_approve,
+            force_hardware_veto=force_veto,
+            is_explicit_target=single_endpoint is not None
+        )
         if ok:
             settled += 1
         else:

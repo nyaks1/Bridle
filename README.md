@@ -1,10 +1,10 @@
-# Bridle 🐎
+# Bridle
 
 > **A hardware-confirmed trust layer and deterministic policy firewall for autonomous AI agent payments on Hedera.**
 
 Built for **ETHOnline 2026**:
-- 🏆 **Hedera Track**: *AI & Agentic Payments on Hedera*
-- 🤖 **Ledger Track**: *AI Agents x Ledger*
+- **Hedera Track**: *AI & Agentic Payments on Hedera* 
+- **Ledger Track**: *AI Agents x Ledger* 
 
 ---
 
@@ -115,6 +115,7 @@ Bridle bridges **Hedera's sub-second, sub-cent payment rails** with **Ledger's h
 Bridle/
 ├── docker-compose.yml         # Docker configuration for Ledger Speculos Nano S+ emulator
 ├── description.md             # 4-minute presentation pitch script and speaker notes
+├── specifications.md          # Complete system specifications, architecture, and design rationale
 ├── package.json               # Node.js dependencies & scripts (test, compile, deploy)
 ├── hardhat.config.ts          # Hardhat 3 configuration (Hedera Testnet Chain ID: 296)
 ├── .env.example               # Environment template
@@ -182,12 +183,12 @@ npm test
 Expected output:
 ```
   BridlePaywall
-    ✔ should deploy with the correct owner
-    ✔ should accept payment for a service and record it
-    ✔ should prevent duplicate nonce replay
-    ✔ should revert if payment value is zero
-    ✔ should allow owner to withdraw settled funds
-    ✔ should revert if non-owner attempts to withdraw
+    passed - should deploy with the correct owner
+    passed - should accept payment for a service and record it
+    passed - should prevent duplicate nonce replay
+    passed - should revert if payment value is zero
+    passed - should allow owner to withdraw settled funds
+    passed - should revert if non-owner attempts to withdraw
 
   6 passing
 ```
@@ -205,13 +206,53 @@ bash scripts/demo.sh
 ### What this script demonstrates:
 1. **Scenario A (Autonomous Micro-Payment <= 1.0 HBAR)**:
    - Endpoint: `GET /api/weather` (0.05 HBAR / $0.005)
-   - Evaluated by Gemini $\rightarrow$ Verified under budget $\rightarrow$ Signed autonomously with software key $\rightarrow$ Settled on Hedera $\rightarrow$ Status 200 $\rightarrow$ Logged to HCS.
+   - Evaluated by Gemini -> Verified under budget -> Signed autonomously with software key -> Settled on Hedera -> Status 200 -> Logged to HCS.
 2. **Scenario B (Macro-Payment > 1.0 HBAR with Hardware Confirmation)**:
    - Endpoint: `GET /api/premium-report` (1.50 HBAR)
-   - Evaluated by Gemini $\rightarrow$ Exceeds threshold $\rightarrow$ **Execution paused** $\rightarrow$ Routed to Ledger Speculos OLED screen $\rightarrow$ Approved on hardware $\rightarrow$ Broadcast to `BridlePaywall` contract on Hedera EVM $\rightarrow$ Verified with retry backoff $\rightarrow$ Status 200 $\rightarrow$ Logged to HCS.
+   - Evaluated by Gemini -> Exceeds threshold -> **Execution paused** -> Routed to Ledger Speculos OLED screen -> Approved on hardware -> Broadcast to `BridlePaywall` contract on Hedera EVM -> Verified with retry backoff -> Status 200 -> Logged to HCS.
 3. **Scenario C (Macro-Payment > 1.0 HBAR with Hardware Veto)**:
    - Endpoint: `GET /api/premium-report` (1.50 HBAR)
-   - Operator presses **LEFT BUTTON** on Ledger $\rightarrow$ Speculos returns `0x6985` (Action refused by user) $\rightarrow$ Transaction aborted $\rightarrow$ **Zero funds leave wallet** $\rightarrow$ `payment_rejected_by_hardware_veto` logged to HCS.
+   - Operator presses **LEFT BUTTON** on Ledger -> Speculos returns `0x6985` (Action refused by user) -> Transaction aborted -> **Zero funds leave wallet** -> `payment_rejected_by_hardware_veto` logged to HCS.
+
+---
+
+## Viewing and Interacting with the Ledger Speculos Emulator
+
+When macro-payments exceed the policy threshold (> 1.0 HBAR), autonomous execution is **instantly paused** and routed to the Ledger Speculos emulator for human hardware confirmation. You can view, monitor, and interact with the emulated Ledger Nano S+ in two ways:
+
+### 1. Interactive Web GUI (Browser Dashboard)
+Open your web browser and navigate to:
+**`http://localhost:5000`** (or `http://127.0.0.1:5000`)
+
+The web emulator provides a real-time, interactive simulation of the physical hardware device:
+- **Ledger Nano S+ Chassis**: Renders the hardware casing with functional Left, Right, and Both buttons.
+- **Live 500ms OLED Screen**: Automatically refreshes every 500ms by querying `GET /screen`. When an agent initiates a macro-payment, the screen instantly updates to:
+  ```
+  +==============================================+
+  |              REVIEW TRANSACTION              |
+  |  Amount: 1.5 HBAR                            |
+  |  To: 0x5442A862...c7dD6B9cfd8                |
+  |  Chain ID: 296 (Hedera Testnet)              |
+  |  Press Both: APPROVE | Left: VETO            |
+  +==============================================+
+  ```
+- **Real-Time Clickable Controls**:
+  - **Left Button (VETO)**: Sends a rejection event (`0x6985: Action refused by user`). The agent immediately detects the veto via live polling, aborts execution, transfers zero funds, and records the veto event to HCS.
+  - **Right Button (Next)**: Simulates scrolling through transaction metadata screens on the device.
+  - **Both Buttons (APPROVE)**: Signs the raw EVM transaction with the device private key. The running agent instantly detects the approval, receives the signed payload, and broadcasts it to Hedera Testnet.
+- **Live In-Page Notification Banner**: Shows current hardware state (`Action Required`, `Approved`, or `Vetoed`) without blocking browser popups.
+- **Device and Network Metadata**: Displays the active device EVM address, Hedera Testnet Chain ID (296), `BridlePaywall` contract address, and HCS topic ID.
+
+### 2. Terminal ASCII OLED Display
+If running in a headless environment or server terminal, `server/speculos_emulator.py` also renders an ASCII OLED screen box directly into stdout whenever a transaction arrives or changes state.
+
+### 3. Interactive vs Automated Modes
+- **Interactive Mode**: Run `python server/agent.py --endpoint=/api/premium-report`. The agent pauses execution and listens simultaneously to both:
+  1. **Web GUI at `http://localhost:5000`**: Click **Both Buttons (APPROVE)** or **Left Button (VETO)** in your web browser. The agent detects the click in under 400ms and responds immediately.
+  2. **Terminal Prompt**: Type `y` to approve or `n` to veto and press Enter.
+- **Automated Demo Approval**: Pass `--auto-approve` to simulate pressing both buttons programmatically without waiting.
+- **Automated Demo Veto**: Pass `--veto` to simulate pressing the left button programmatically without waiting.
+- **Direct Endpoint Targeting**: Pass `--endpoint=/api/...` to bypass semantic relevance filtering and execute against a specific endpoint directly.
 
 ---
 
@@ -230,9 +271,8 @@ curl http://127.0.0.1:5000/health
 
 ### Terminal 2: Start the Bridle Gateway Server
 ```bash
-cd server
-source venv/bin/activate
-uvicorn server:app --host 127.0.0.1 --port 8000
+source server/venv/bin/activate
+uvicorn server.server:app --host 127.0.0.1 --port 8000
 ```
 Verify gateway health:
 ```bash
@@ -241,31 +281,37 @@ curl http://127.0.0.1:8000/api/health
 
 ### Terminal 3: Run the Agent
 
-**Activate the environment**
+**Activate the virtual environment:**
 ```bash
-cd server
-source venv/bin/activate
+source server/venv/bin/activate
 ```
 
-**Run Micro-Payment (Autonomous):**
+**Run Micro-Payment (Autonomous Software Sign <= 1.0 HBAR):**
 ```bash
 python server/agent.py --endpoint=/api/weather
 ```
 
-**Run Macro-Payment (Hardware Approved):**
+**Run Macro-Payment with Live Hardware Interaction (Web GUI or Terminal):**
 ```bash
-python agent.py --endpoint=/api/premium-report --auto-approve
+python server/agent.py --endpoint=/api/premium-report
+```
+*When execution pauses, approve or veto directly by clicking the button on `http://localhost:5000` or by typing `y`/`n` into the terminal.*
+
+**Run Macro-Payment with Automated Hardware Approval:**
+```bash
+python server/agent.py --endpoint=/api/premium-report --auto-approve
 ```
 
-**Run Macro-Payment (Hardware Vetoed):**
+**Run Macro-Payment with Automated Hardware Veto (Abort / Zero funds):**
 ```bash
-python agent.py --endpoint=/api/premium-report --veto
+python server/agent.py --endpoint=/api/premium-report --veto
 ```
 
-**Run Interactive Hardware Approval (CLI Prompts):**
+**Run Full Autonomous Discovery Across All Endpoints:**
 ```bash
-python agent.py --endpoint=/api/premium-report
+python server/agent.py
 ```
+*(The agent discovers all endpoints advertised by the gateway, evaluates their relevance to `AGENT_TASK` using Gemini 3.6 Flash reasoning, and executes eligible calls within budget.)*
 
 ---
 
@@ -284,7 +330,7 @@ python agent.py --endpoint=/api/premium-report
 ## Verifying the Cryptographic Audit Trail on Hedera
 
 Because every decision is anchored to Hedera Consensus Service, anyone can verify the agent's actions on HashScan:
-👉 [https://hashscan.io/testnet/topic/0.0.10474223](https://hashscan.io/testnet/topic/0.0.10474223)
+[https://hashscan.io/testnet/topic/0.0.10474223](https://hashscan.io/testnet/topic/0.0.10474223)
 
 Or query the Hedera Mirror Node directly via HTTP:
 ```bash
@@ -324,24 +370,7 @@ curl -s "https://testnet.mirrornode.hedera.com/api/v1/topics/0.0.10474223/messag
 
 ---
 
-## Track Qualification Checklist
 
-### 🏆 Hedera — AI & Agentic Payments on Hedera
-- [x] **Live x402-Gated Service on Hedera Testnet**: Real metered endpoints returning HTTP 402 challenges.
-- [x] **Blocky402 Facilitator Integration**: Hedera-native facilitator integration with fee payer sponsorship (`0.0.7162784`).
-- [x] **Autonomous Agent Consumer**: End-to-end payment construction, signing, and resource consumption.
-- [x] **Pay-Per-Call Metering**: Query-based pricing (0.05 to 1.5 HBAR) instead of flat charges.
-- [x] **Immutable HCS Audit Trail**: Real-time message submission to HCS Topic `0.0.10474223`.
-- [x] **EVM Smart Contract Deployment**: Hardhat 3 tested contract `BridlePaywall.sol` on Hedera EVM (`0x5442A862d2B11709045BE15015368c7dD6B9cfd8`).
-
-### 🤖 Ledger — AI Agents x Ledger
-- [x] **Device-Backed Security for Autonomous Agents**: Hardware confirmation gate for high-value actions.
-- [x] **Human-in-the-Loop Veto Hook**: Automatically pauses execution when payment > 1.0 HBAR threshold and displays details on device OLED screen.
-- [x] **Ledger Speculos Emulator Integration**: Reproducible Docker & native REST API bridge (`http://127.0.0.1:5000`) for testing without physical hardware.
-- [x] **Hardware Veto Protection**: Verifiable abort on `0x6985` user rejection; zero funds leave the wallet.
-- [x] **Dual-Rail Safety**: Retains sub-second autonomous micro-payments while enforcing hardware protection for macro-transactions.
-
----
 
 ## License
 

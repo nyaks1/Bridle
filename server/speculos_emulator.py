@@ -58,18 +58,23 @@ current_screen: Dict[str, Any] = {
     "title": "Ethereum App Ready",
     "lines": ["Ledger Nano S+", "Awaiting command..."],
     "pending_tx": None,
-    "status": "idle"
+    "status": "idle",
+    "last_decision": None,
+    "signed_tx_raw": None,
+    "tx_hash": None,
+    "code": None,
+    "message": ""
 }
 
 def render_oled(title: str, lines: list):
-    border = "═" * 46
-    print(f"\n┌{border}┐")
-    print(f"│  📟 [LEDGER NANO S+ OLED SCREEN]             │")
-    print(f"├{border}┤")
-    print(f"│  {title.center(44)}│")
+    border = "=" * 46
+    print(f"\n+{border}+")
+    print(f"|  [LEDGER NANO S+ OLED SCREEN]                |")
+    print(f"+{border}+")
+    print(f"|  {title.center(44)}|")
     for line in lines:
-        print(f"│  {line.ljust(44)}│")
-    print(f"└{border}┘\n")
+        print(f"|  {line.ljust(44)}|")
+    print(f"+{border}+\n")
 
 from fastapi.responses import JSONResponse, HTMLResponse
 
@@ -273,16 +278,18 @@ def index_ui():
             <span class="badge" id="conn-badge">Hardware Connected</span>
         </div>
 
-        <p style="color: #94a3b8; font-size: 0.9rem; text-align: center; margin-bottom: 8px;">
+        <p style="color: #94a3b8; font-size: 0.9rem; text-align: center; margin-bottom: 16px;">
             Human-in-the-loop Hardware Veto Hook for autonomous AI agent transactions (> 1.0 HBAR).
         </p>
+
+        <div id="action-banner" style="display:none; padding: 14px 18px; margin-bottom: 20px; border-radius: 10px; font-weight: 600; text-align: center; font-size: 0.95rem;"></div>
 
         <!-- Simulated Physical Device -->
         <div class="ledger-chassis">
             <div class="hardware-buttons">
-                <button class="hw-btn veto-btn" onclick="triggerVeto()">◀ Left (VETO)</button>
-                <button class="hw-btn" onclick="triggerRight()">Right (Next) ▶</button>
-                <button class="hw-btn both-btn" onclick="triggerApproval()">● Both Buttons (APPROVE)</button>
+                <button class="hw-btn veto-btn" onclick="triggerVeto()">Left Button (VETO)</button>
+                <button class="hw-btn" onclick="triggerRight()">Right Button (Next)</button>
+                <button class="hw-btn both-btn" onclick="triggerApproval()">Both Buttons (APPROVE)</button>
             </div>
 
             <div class="oled-screen" id="oled-display">
@@ -341,6 +348,29 @@ def index_ui():
                     el.innerText = line;
                     linesContainer.appendChild(el);
                 });
+
+                const banner = document.getElementById('action-banner');
+                if (data.status === 'awaiting_confirmation') {
+                    banner.style.display = 'block';
+                    banner.style.background = '#1e3a8a';
+                    banner.style.border = '1px solid #3b82f6';
+                    banner.style.color = '#bfdbfe';
+                    banner.innerText = 'Action Required: High-value agent payment challenge awaiting confirmation.';
+                } else if (data.status === 'approved') {
+                    banner.style.display = 'block';
+                    banner.style.background = '#065f46';
+                    banner.style.border = '1px solid #10b981';
+                    banner.style.color = '#a7f3d0';
+                    banner.innerText = 'Transaction APPROVED on hardware. Cryptographic signature delivered to agent.';
+                } else if (data.status === 'vetoed') {
+                    banner.style.display = 'block';
+                    banner.style.background = '#7f1d1d';
+                    banner.style.border = '1px solid #ef4444';
+                    banner.style.color = '#fecaca';
+                    banner.innerText = 'Transaction VETOED (Status 0x6985). Zero funds transferred.';
+                } else {
+                    banner.style.display = 'none';
+                }
             } catch (err) {
                 console.error('Polling error:', err);
             }
@@ -350,12 +380,9 @@ def index_ui():
             try {
                 const res = await fetch('/confirm-approval', { method: 'POST' });
                 const data = await res.json();
-                if (data.status === 'approved') {
-                    alert('✅ Transaction APPROVED on Ledger Hardware! Tx Hash: ' + data.tx_hash);
-                }
                 fetchScreen();
             } catch (err) {
-                alert('Approval notice: ' + err);
+                console.error('Approval notice:', err);
             }
         }
 
@@ -363,10 +390,9 @@ def index_ui():
             try {
                 const res = await fetch('/confirm-veto', { method: 'POST' });
                 const data = await res.json();
-                alert('🛑 Transaction VETOED! Hardware status 0x6985 returned.');
                 fetchScreen();
             } catch (err) {
-                alert('Veto notice: ' + err);
+                console.error('Veto notice:', err);
             }
         }
 
@@ -414,18 +440,91 @@ def handle_apdu(req: ApduRequest):
     # Default success response
     return {"data": "9000"}
 
+def do_approve() -> Dict[str, Any]:
+    raw_tx = current_screen.get("pending_tx")
+    if not raw_tx:
+        if current_screen.get("status") == "approved" and current_screen.get("signed_tx_raw"):
+            return {
+                "status": "approved",
+                "signed_tx_raw": current_screen["signed_tx_raw"],
+                "tx_hash": current_screen["tx_hash"],
+                "device_address": ledger_account.address,
+                "r": current_screen.get("r", "0x0"),
+                "s": current_screen.get("s", "0x0"),
+                "v": current_screen.get("v", 0)
+            }
+        raise HTTPException(status_code=400, detail="No pending transaction awaiting confirmation.")
+
+    print("[Speculos] Both buttons pressed: Transaction APPROVED on hardware device.")
+    signed = Account.sign_transaction(raw_tx, LEDGER_PRIVATE_KEY)
+    tx_hash = signed.hash.hex()
+    signed_raw = signed.raw_transaction.hex()
+
+    current_screen["status"] = "approved"
+    current_screen["last_decision"] = "approved"
+    current_screen["pending_tx"] = None
+    current_screen["signed_tx_raw"] = signed_raw
+    current_screen["tx_hash"] = tx_hash
+    current_screen["device_address"] = ledger_account.address
+    current_screen["r"] = hex(signed.r)
+    current_screen["s"] = hex(signed.s)
+    current_screen["v"] = hex(signed.v)
+    current_screen["title"] = "TRANSACTION APPROVED"
+    current_screen["lines"] = [
+        "Signed on hardware device",
+        f"Hash: {tx_hash[:16]}...",
+        f"Device: {ledger_account.address[:14]}..."
+    ]
+    render_oled(current_screen["title"], current_screen["lines"])
+
+    return {
+        "status": "approved",
+        "signed_tx_raw": signed_raw,
+        "tx_hash": tx_hash,
+        "device_address": ledger_account.address,
+        "r": hex(signed.r),
+        "s": hex(signed.s),
+        "v": hex(signed.v)
+    }
+
+def do_veto() -> Dict[str, Any]:
+    raw_tx = current_screen.get("pending_tx")
+    if not raw_tx:
+        if current_screen.get("status") == "vetoed":
+            return {
+                "status": "vetoed",
+                "code": "0x6985",
+                "message": "Action refused by user"
+            }
+        raise HTTPException(status_code=400, detail="No pending transaction to veto.")
+
+    print("[Speculos] Left button pressed: Transaction VETOED by human operator.")
+    current_screen["status"] = "vetoed"
+    current_screen["last_decision"] = "vetoed"
+    current_screen["pending_tx"] = None
+    current_screen["code"] = "0x6985"
+    current_screen["message"] = "Action refused by user"
+    current_screen["title"] = "TRANSACTION VETOED"
+    current_screen["lines"] = [
+        "Action cancelled by operator.",
+        "Status: 0x6985 (VETO)",
+        "Zero funds transferred."
+    ]
+    render_oled(current_screen["title"], current_screen["lines"])
+
+    return {
+        "status": "vetoed",
+        "code": "0x6985",
+        "message": "Action refused by user"
+    }
+
 @app.post("/button/left")
 @app.post("/events/left")
 def press_left(event: Optional[ButtonEvent] = None):
     """Simulate left button press: Reject / Cancel."""
-    if current_screen["pending_tx"]:
-        print("[Speculos] ❌ Left button pressed: Transaction VETOED by human operator.")
-        current_screen["status"] = "vetoed"
-        current_screen["title"] = "Transaction Vetoed"
-        current_screen["lines"] = ["Action cancelled by operator.", "Status: 0x6985 (VETO)"]
-        render_oled(current_screen["title"], current_screen["lines"])
-        return {"status": "vetoed", "code": "0x6985", "message": "Action refused by user"}
-    return {"status": "idle"}
+    if current_screen.get("pending_tx"):
+        return do_veto()
+    return {"status": current_screen["status"]}
 
 @app.post("/button/right")
 @app.post("/events/right")
@@ -437,15 +536,30 @@ def press_right(event: Optional[ButtonEvent] = None):
 @app.post("/events")
 def press_both(event: Optional[ButtonEvent] = None):
     """Simulate pressing both buttons: Approve / Confirm."""
-    if current_screen["pending_tx"]:
-        print("[Speculos] ✅ Both buttons pressed: Transaction APPROVED on hardware device.")
-        tx = current_screen["pending_tx"]
-        current_screen["status"] = "approved"
-        current_screen["title"] = "Transaction Approved"
-        current_screen["lines"] = ["Signing transaction with", f"Device Key: {ledger_account.address[:10]}..."]
-        render_oled(current_screen["title"], current_screen["lines"])
-        return {"status": "approved", "tx": tx}
-    return {"status": "idle"}
+    if current_screen.get("pending_tx"):
+        return do_approve()
+    return {"status": current_screen["status"]}
+
+@app.post("/confirm-approval")
+def confirm_approval():
+    return do_approve()
+
+@app.post("/confirm-veto")
+def confirm_veto():
+    return do_veto()
+
+@app.get("/tx-status")
+def get_tx_status():
+    return {
+        "status": current_screen["status"],
+        "last_decision": current_screen.get("last_decision"),
+        "signed_tx_raw": current_screen.get("signed_tx_raw"),
+        "tx_hash": current_screen.get("tx_hash"),
+        "code": current_screen.get("code", "0x9000"),
+        "message": current_screen.get("message", ""),
+        "has_pending": current_screen.get("pending_tx") is not None,
+        "device_address": ledger_account.address,
+    }
 
 @app.post("/sign-tx")
 def sign_transaction(req: TxSignRequest):
@@ -481,66 +595,23 @@ def sign_transaction(req: TxSignRequest):
     current_screen["lines"] = lines
     current_screen["pending_tx"] = raw_tx
     current_screen["status"] = "awaiting_confirmation"
+    current_screen["last_decision"] = "pending"
+    current_screen["signed_tx_raw"] = None
+    current_screen["tx_hash"] = None
+    current_screen["code"] = None
+    current_screen["message"] = ""
 
     render_oled(title, lines)
 
     # Auto-approve path (for automated headless test/demo execution)
     if req.auto_approve:
-        print("[Speculos] 🤖 Auto-approval flag enabled. Signing transaction on hardware...")
-        press_both()
-        signed = Account.sign_transaction(raw_tx, LEDGER_PRIVATE_KEY)
-        return {
-            "status": "approved",
-            "signed_tx_raw": signed.raw_transaction.hex(),
-            "tx_hash": signed.hash.hex(),
-            "device_address": ledger_account.address,
-            "r": hex(signed.r),
-            "s": hex(signed.s),
-            "v": hex(signed.v)
-        }
+        print("[Speculos] Auto-approval flag enabled. Signing transaction on hardware...")
+        return do_approve()
 
     return {
         "status": "awaiting_confirmation",
         "screen": current_screen,
         "instructions": "Call POST /button/both to approve or POST /button/left to veto."
-    }
-
-@app.post("/confirm-approval")
-def confirm_approval():
-    """Trigger the hardware confirmation and produce the signed transaction."""
-    if not current_screen["pending_tx"]:
-        raise HTTPException(status_code=400, detail="No pending transaction awaiting confirmation.")
-
-    raw_tx = current_screen["pending_tx"]
-    press_both()
-    signed = Account.sign_transaction(raw_tx, LEDGER_PRIVATE_KEY)
-    current_screen["pending_tx"] = None
-    current_screen["status"] = "idle"
-
-    return {
-        "status": "approved",
-        "signed_tx_raw": signed.raw_transaction.hex(),
-        "tx_hash": signed.hash.hex(),
-        "device_address": ledger_account.address,
-        "r": hex(signed.r),
-        "s": hex(signed.s),
-        "v": hex(signed.v)
-    }
-
-@app.post("/confirm-veto")
-def confirm_veto():
-    """Trigger the hardware veto."""
-    if not current_screen["pending_tx"]:
-        raise HTTPException(status_code=400, detail="No pending transaction to veto.")
-
-    press_left()
-    current_screen["pending_tx"] = None
-    current_screen["status"] = "idle"
-
-    return {
-        "status": "vetoed",
-        "code": "0x6985",
-        "message": "Payment rejected by Ledger hardware veto."
     }
 
 if __name__ == "__main__":
