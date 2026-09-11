@@ -17,7 +17,7 @@ Bridle sits between an agent and its money.
 1. The agent discovers a metered service and attempts to pay for it via **x402** (HTTP 402 Payment Required), settled on **Hedera** through the **Blocky402** facilitator — sub-cent fees, no subscriptions, no leaked API keys.
 2. Each API call is metered — the agent pays **per query**, not a flat rate.
 3. Payments under a set threshold settle automatically. Payments over the threshold are **blocked by policy** before any funds move.
-4. Settlement uses **Hedera Token Service (HTS)** fungible tokens — BridleCredits (BRC) — not raw HBAR.
+4. Settlement uses **native HBAR** on Hedera — sub-cent transaction fees, instant finality.
 5. Every decision — payment settled or payment blocked — is written to **Hedera Consensus Service (HCS)** as a tamper-proof, timestamped record.
 
 Nobody, not even the operator, can quietly edit or delete the audit trail after the fact.
@@ -53,7 +53,7 @@ Policy gate (deterministic, never LLM)
 | **x402 protocol** | Standard HTTP 402 payment flow via `x402` Python SDK — no custom contracts needed |
 | **Blocky402 facilitator** | Payment verification and settlement delegated to Hedera-native facilitator |
 | **Pay-per-call metering** | Each endpoint has a per-query price (weather: $0.005, analytics: $0.05, forecast: $0.02) |
-| **HTS token settlement** | Payments in BridleCredits (BRC) — a Hedera Token Service fungible token — not raw HBAR |
+| **Native HBAR settlement** | Payments in native HBAR on Hedera — sub-cent fees, instant finality |
 | **Policy engine** | Deterministic threshold check — never delegated to LLM |
 | **HCS audit trail** | Every payment or rejection is an immutable message on Hedera Consensus Service |
 | **Gemini classification** | Agent evaluates service relevance before paying |
@@ -66,7 +66,7 @@ Policy gate (deterministic, never LLM)
 
 - [x] Verifiable payment audit trails on HCS
 - [x] Pay-per-call metering (per-query pricing, not flat rate)
-- [x] HTS tokens (BridleCredits fungible token)
+- [ ] HTS tokens (native HBAR used instead)
 - [x] Blocky402 facilitator (Hedera-native x402 facilitator)
 - [ ] Multi-agent negotiation
 - [ ] Agent discovery / UCP directory
@@ -123,7 +123,7 @@ HCS_TOPIC_ID="0.0.YOUR_TOPIC_ID"
 FACILITATOR_URL="https://api.testnet.blocky402.com"
 RESOURCE_SERVER_URL="http://127.0.0.1:8000"
 PAY_TO_ACCOUNT="0.0.RECIPIENT_ACCOUNT_ID"
-SPENDING_THRESHOLD_HBAR="5.0"
+SPENDING_THRESHOLD_HBAR="0.01"
 AGENT_TASK="Get current weather data for Cape Town, South Africa"
 ```
 
